@@ -37,6 +37,13 @@ jobs:
       - name: Change package name
         run: sed -i 's/^APP_PACKAGE=.*/APP_PACKAGE=org.shadowgram.messenger/' gradle.properties
 
+      - name: Fix google-services.json package name
+        run: |
+          find . -name google-services.json -not -path "*/build/*" | while read -r f; do
+            echo "Patching $f"
+            sed -i -E 's/"package_name": *"[^"]*"/"package_name": "org.shadowgram.messenger.web"/g' "$f"
+          done
+
       - name: Build APK
         run: |
           chmod +x gradlew
