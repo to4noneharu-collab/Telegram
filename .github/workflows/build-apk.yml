@@ -18,6 +18,8 @@ jobs:
           distribution: temurin
           java-version: 17
 
+      - uses: gradle/actions/setup-gradle@v4
+
       - name: Install NDK and CMake
         run: |
           SDKM=$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager
@@ -37,11 +39,23 @@ jobs:
       - name: Change package name
         run: sed -i 's/^APP_PACKAGE=.*/APP_PACKAGE=org.shadowgram.messenger/' gradle.properties
 
-      - name: Fix google-services.json package name
+      - name: Fix google-services.json package names
         run: |
           find . -name google-services.json -not -path "*/build/*" | while read -r f; do
             echo "Patching $f"
-            sed -i -E 's/"package_name": *"[^"]*"/"package_name": "org.shadowgram.messenger.web"/g' "$f"
+            python3 - "$f" << 'PY'
+          import json, sys, copy
+          p = sys.argv[1]
+          d = json.load(open(p, encoding="utf-8"))
+          base = d["client"][0]
+          clients = []
+          for pkg in ["org.shadowgram.messenger.web", "org.shadowgram.messenger", "org.telegram.messenger", "org.telegram.messenger.web"]:
+              c = copy.deepcopy(base)
+              c["client_info"]["android_client_info"]["package_name"] = pkg
+              clients.append(c)
+          d["client"] = clients
+          json.dump(d, open(p, "w", encoding="utf-8"), indent=2)
+          PY
           done
 
       - name: Build APK
