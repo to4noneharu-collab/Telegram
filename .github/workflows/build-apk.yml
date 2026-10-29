@@ -66,11 +66,31 @@ jobs:
           find . -name build.gradle -not -path "*/build/*" -exec sed -i -E 's/abiFilters .*/abiFilters "arm64-v8a"/' {} +
           sed -i "s/ndk.debugSymbolLevel = 'FULL'/ndk.debugSymbolLevel = 'NONE'/" TMessagesProj_App/build.gradle
           grep -rn "abiFilters" --include=build.gradle . | grep -v "/build/" || true
+          cat > "$GITHUB_WORKSPACE/abi.init.gradle" << 'EOF'
+          allprojects {
+            plugins.withId('com.android.library') {
+              project.android.defaultConfig.ndk.abiFilters.add('arm64-v8a')
+            }
+          }
+          EOF
 
       - name: Build APK
         run: |
           chmod +x gradlew
-          ./gradlew :TMessagesProj_App:assembleAfatRelease --no-daemon --parallel --build-cache -Pandroid.injected.build.abi=arm64-v8a -Dorg.gradle.jvmargs="-Xmx4g"
+          ./gradlew :TMessagesProj_App:assembleAfatRelease --no-daemon --parallel --build-cache -I "$GITHUB_WORKSPACE/abi.init.gradle" -Dorg.gradle.jvmargs="-Xmx4g"
+
+      - name: Verify APK (signature and integrity)
+        if: always()
+        run: |
+          set +e
+          APKSIGNER=$(ls $ANDROID_HOME/build-tools/*/apksigner | sort -V | tail -1)
+          find "$GITHUB_WORKSPACE" -name "*.apk" -not -path "*/tlottie/*" | while read -r f; do
+            echo "== $f"
+            ls -l "$f"
+            unzip -tq "$f" | tail -1
+            "$APKSIGNER" verify --verbose --print-certs "$f" 2>&1 | head -15
+          done
+          exit 0
 
       - name: List built files
         if: always()
