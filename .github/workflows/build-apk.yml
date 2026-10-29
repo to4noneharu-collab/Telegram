@@ -13,6 +13,9 @@ jobs:
         with:
           submodules: recursive
 
+      - name: Add shadow ban list menu
+        run: python3 .github/scripts/shadowban_list.py
+
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
@@ -58,10 +61,16 @@ jobs:
           PY
           done
 
+      - name: Speed up build (arm64 only, no debug symbols)
+        run: |
+          find . -name build.gradle -not -path "*/build/*" -exec sed -i -E 's/abiFilters .*/abiFilters "arm64-v8a"/' {} +
+          sed -i "s/ndk.debugSymbolLevel = 'FULL'/ndk.debugSymbolLevel = 'NONE'/" TMessagesProj_App/build.gradle
+          grep -rn "abiFilters" --include=build.gradle . | grep -v "/build/" || true
+
       - name: Build APK
         run: |
           chmod +x gradlew
-          ./gradlew :TMessagesProj_App:assembleAfatRelease --no-daemon -Dorg.gradle.jvmargs="-Xmx4g"
+          ./gradlew :TMessagesProj_App:assembleAfatRelease --no-daemon --parallel --build-cache -Pandroid.injected.build.abi=arm64-v8a -Dorg.gradle.jvmargs="-Xmx4g"
 
       - uses: actions/upload-artifact@v4
         with:
