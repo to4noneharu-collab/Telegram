@@ -1104,6 +1104,8 @@ public class NotificationsController extends BaseController implements Notificat
             }
         }
 
+        ShadowBan.filter(messageObjects);
+
         if (messageObjects.isEmpty()) {
             if (countDownLatch != null) {
                 countDownLatch.countDown();

@@ -1,0 +1,45 @@
+name: Build APK
+
+on:
+  push:
+    branches: [master, main]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - uses: android-actions/setup-android@v3
+
+      - name: Install NDK
+        run: sdkmanager "ndk;27.2.12479018" "cmake;3.22.1"
+
+      - name: Set own api_id / api_hash
+        env:
+          TG_API_ID: ${{ secrets.TG_API_ID }}
+          TG_API_HASH: ${{ secrets.TG_API_HASH }}
+        run: |
+          test -n "$TG_API_ID" && test -n "$TG_API_HASH" || { echo "Add TG_API_ID and TG_API_HASH secrets (my.telegram.org)"; exit 1; }
+          F=TMessagesProj/src/main/java/org/telegram/messenger/BuildVars.java
+          sed -i "s/public static int APP_ID = .*;/public static int APP_ID = ${TG_API_ID};/" $F
+          sed -i "s/public static String APP_HASH = .*;/public static String APP_HASH = \"${TG_API_HASH}\";/" $F
+
+      - name: Change package name
+        run: sed -i 's/^APP_PACKAGE=.*/APP_PACKAGE=org.shadowgram.messenger/' gradle.properties
+
+      - name: Build APK
+        run: |
+          chmod +x gradlew
+          ./gradlew :TMessagesProj_App:assembleAfatStandalone --no-daemon -Dorg.gradle.jvmargs="-Xmx4g"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: apk
+          path: TMessagesProj_App/build/outputs/apk/**/*.apk

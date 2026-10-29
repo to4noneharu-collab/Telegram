@@ -1214,6 +1214,7 @@ public class ChatActivity extends BaseFragment implements
     public final static int OPTION_DELETE = 1;
     public final static int OPTION_FORWARD = 2;
     public final static int OPTION_COPY = 3;
+    public final static int OPTION_SHADOW_BAN = 200;
     public final static int OPTION_SAVE_TO_GALLERY = 4;
     public final static int OPTION_APPLY_LOCALIZATION_OR_THEME = 5;
     public final static int OPTION_SHARE = 6;
@@ -20829,6 +20830,7 @@ public class ChatActivity extends BaseFragment implements
             postponedScrollToLastMessageQueryIndex = 0;
         }
         ArrayList<MessageObject> messArr = (ArrayList<MessageObject>) args[2];
+        org.telegram.messenger.ShadowBan.filter(messArr);
 
         boolean universalNotify = false;
         HashMap<Integer, MessageObject> oldMessages = null;
@@ -25605,6 +25607,10 @@ public class ChatActivity extends BaseFragment implements
         processNewMessages(arr, true);
     }
     private void processNewMessages(ArrayList<MessageObject> arr, final boolean animatedFromBottom) {
+        org.telegram.messenger.ShadowBan.filter(arr);
+        if (arr.isEmpty()) {
+            return;
+        }
         FileLog.d("processNewMessages " + arr.size() + " messages");
 
         final boolean isBot = UserObject.isBot(currentUser);
@@ -31287,6 +31293,14 @@ public class ChatActivity extends BaseFragment implements
                 icons.add(R.drawable.msg_calendar2);
             }
 
+            if (!suggestEdit && selectedObject != null && !selectedObject.isOutOwner() && selectedObject.getFromChatId() > 0
+                    && selectedObject.getFromChatId() != getUserConfig().getClientUserId()) {
+                boolean banned = org.telegram.messenger.ShadowBan.isBanned(selectedObject.getFromChatId());
+                items.add(banned ? "Снять теневой бан" : "Теневой бан");
+                options.add(OPTION_SHADOW_BAN);
+                icons.add(R.drawable.msg_block);
+            }
+
             if (options.isEmpty() && optionsView == null) {
                 return false;
             }
@@ -33606,6 +33620,20 @@ public class ChatActivity extends BaseFragment implements
         }
         boolean preserveDim = false;
         switch (option) {
+            case OPTION_SHADOW_BAN: {
+                long bannedId = selectedObject.getFromChatId();
+                boolean nowBanned = org.telegram.messenger.ShadowBan.toggle(bannedId);
+                if (nowBanned) {
+                    for (int i = messages.size() - 1; i >= 0; i--) {
+                        MessageObject m = messages.get(i);
+                        if (m != null && !m.isOutOwner() && m.getFromChatId() == bannedId) {
+                            removeMessageObject(m);
+                        }
+                    }
+                }
+                android.widget.Toast.makeText(getParentActivity(), nowBanned ? "Пользователь скрыт локально" : "Теневой бан снят (новые сообщения будут видны)", android.widget.Toast.LENGTH_SHORT).show();
+                break;
+            }
             case OPTION_RETRY: {
                 final MessageObject object = selectedObject;
                 final MessageObject.GroupedMessages group = selectedObjectGroup;
