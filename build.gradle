@@ -34,6 +34,22 @@ subprojects {
         }
     }
 
+    // Every library module gets a "standalone" build type (a copy of release),
+    // so that :TMessagesProj_App:assembleAfatStandalone can resolve libraries
+    // like :jlatexmath that only define debug/release. This callback fires when
+    // the plugin is applied, i.e. BEFORE the module's own android {} block, so a
+    // module that declares its own standalone {} still overrides these defaults.
+    plugins.withId('com.android.library') {
+        android {
+            buildTypes {
+                standalone {
+                    initWith release
+                    matchingFallbacks = ['release']
+                }
+            }
+        }
+    }
+
     if (project.projectDir.absolutePath.contains('/TMessagesProj_Modules/media/')) {
         project.plugins.withId('com.android.library') {
             project.android {
