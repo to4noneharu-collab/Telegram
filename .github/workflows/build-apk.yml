@@ -72,7 +72,18 @@ jobs:
           chmod +x gradlew
           ./gradlew :TMessagesProj_App:assembleAfatRelease --no-daemon --parallel --build-cache -Pandroid.injected.build.abi=arm64-v8a -Dorg.gradle.jvmargs="-Xmx4g"
 
+      - name: List built files
+        if: always()
+        run: |
+          echo "== APK/AAB files =="
+          find "$GITHUB_WORKSPACE" \( -name "*.apk" -o -name "*.aab" \) -not -path "*/tlottie/*" | head -30
+          echo "== outputs dirs =="
+          find "$GITHUB_WORKSPACE" -type d -path "*/build/outputs/*" | head -30
+
       - uses: actions/upload-artifact@v4
         with:
           name: apk
-          path: TMessagesProj_App/build/outputs/apk/**/*.apk
+          path: |
+            **/*.apk
+            !**/tlottie/**
+          if-no-files-found: error
