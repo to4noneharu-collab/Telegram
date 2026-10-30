@@ -1,0 +1,56 @@
+name: Recon (code survey, no build)
+
+on:
+  workflow_dispatch:
+
+jobs:
+  recon:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Survey code
+        run: |
+          set +e
+          J=TMessagesProj/src/main/java/org/telegram
+          sec() { echo; echo "######## $*"; }
+
+          sec "repo"
+          git log -1 --oneline; ls
+          grep -n "APP_VERSION\|APP_PACKAGE" gradle.properties
+
+          sec "app name strings"
+          grep -rn 'name="AppName"\|name="app_name"\|name="AppNameBeta"' --include=strings*.xml TMessagesProj/src TMessagesProj_App/src | head -20
+          sec "manifest label/icon"
+          grep -n "android:label\|android:icon\|android:roundIcon" TMessagesProj/config/release/AndroidManifest.xml TMessagesProj/config/release/AndroidManifest_SDK23.xml TMessagesProj_App/src/main/AndroidManifest.xml | head -40
+          sec "launcher icon files"
+          find . \( -name "ic_launcher*" -o -name "icon_*_launcher*" \) -not -path "*/build/*" | sort | head -80
+          sec "adaptive icon xml"
+          for f in $(find . -path "*mipmap-anydpi*" -name "ic_launcher*.xml" -not -path "*/build/*" | head -5); do echo "--- $f"; cat "$f"; done
+
+          sec "ShadowBan usages"
+          grep -rn "ShadowBan" TMessagesProj/src/main/java | grep -v "^TMessagesProj/src/main/java/org/telegram/messenger/ShadowBan.java" | head -40
+          sec "ShadowBan.java"
+          cat $J/messenger/ShadowBan.java
+
+          sec "typing: MessagesController"
+          grep -n "TL_updateUserTyping\|TL_updateChatUserTyping\|TL_updateChannelUserTyping\|class PrintingUser\|updatePrintingUsersWithNewMessages\|updatePrintingStrings" $J/messenger/MessagesController.java | head -40
+          F=$(grep -n "instanceof TLRPC.TL_updateUserTyping" $J/messenger/MessagesController.java | head -1 | cut -d: -f1)
+          [ -n "$F" ] && sed -n "$((F-6)),$((F+60))p" $J/messenger/MessagesController.java
+
+          sec "seen-by list"
+          cat $J/ui/Components/MessageSeenView.java | head -400
+          grep -rn "getMessageReadParticipants" TMessagesProj/src/main/java | head
+
+          sec "reply preview"
+          grep -rn "replyMessageObject = " TMessagesProj/src/main/java | head -40
+          grep -n "replyMessageObject" $J/messenger/MessageObject.java | head -40
+
+          sec "reactions"
+          grep -rn "recent_reactions" TMessagesProj/src/main/java --include=*.java | head -50
+          grep -n "TL_updateMessageReactions" $J/messenger/MessagesController.java | head
+          grep -rn "getMessageReactionsList" TMessagesProj/src/main/java | head
+
+          sec "settings rows"
+          grep -n "Row = \|Row;" $J/ui/SettingsActivity.java | head -70
+          ls $J/ui | grep -i "theme\|appearance" | head
