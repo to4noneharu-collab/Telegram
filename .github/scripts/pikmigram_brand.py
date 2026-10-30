@@ -163,4 +163,39 @@ if bg.exists():
     print("фон адаптивной иконки: розовый градиент")
 else:
     print("предупреждение: drawable/icon_background_sa.xml не найден, фон не менялся")
+# ---------- 4. название из языкового пакета ----------
+# Telegram берёт строки сначала из языкового пакета с сервера (там AppName = "Telegram"),
+# и только потом из ресурсов. Поэтому подменяем значение прямо при чтении.
+import subprocess
+
+LC = Path("TMessagesProj/src/main/java/org/telegram/messenger/LocaleController.java")
+if not LC.exists():
+    die("не найден LocaleController.java")
+lc = LC.read_text(encoding="utf-8")
+if "pgBrand(" not in lc:
+    rx_class = re.compile(r"(public class LocaleController[^{]*\{)")
+    rx_get = re.compile(r"localeValues\.get\((\w+)\)")
+    n_get = len(rx_get.findall(lc))
+    if len(rx_class.findall(lc)) != 1 or n_get == 0:
+        hint = subprocess.run(["grep", "-n", "-E", "localeValues|public class LocaleController|String getString", str(LC)], capture_output=True, text=True).stdout
+        print("--- подсказка для разработчика ---")
+        print("\n".join(hint.splitlines()[:40]))
+        die("LocaleController: не нашёл ожидаемые места (class: %d, localeValues.get: %d)" % (len(rx_class.findall(lc)), n_get))
+    helper = """
+    private static String pgBrand(String key, String value) {
+        if ("AppName".equals(key)) {
+            return "%s";
+        }
+        if ("AppNameBeta".equals(key)) {
+            return "%s Beta";
+        }
+        return value;
+    }
+""" % (NAME, NAME)
+    lc = rx_get.sub(lambda m: "pgBrand(%s, localeValues.get(%s))" % (m.group(1), m.group(1)), lc)
+    lc = rx_class.sub(lambda m: m.group(1) + helper, lc, count=1)
+    LC.write_text(lc, encoding="utf-8")
+    print("название из языкового пакета: подменено мест чтения: %d" % n_get)
+else:
+    print("название из языкового пакета: уже подменено")
 print("Готово: PikmiGram")

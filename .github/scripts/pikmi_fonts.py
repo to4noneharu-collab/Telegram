@@ -118,13 +118,98 @@ public class PikmiFonts {
         return load(current());
     }
 
+    private static volatile boolean appWideDone;
+
+    /**
+     * Меняет шрифт по умолчанию во всём процессе: и для обычных TextView, и для текста, который
+     * Telegram рисует сам через Paint без явного шрифта. Работает через скрытые API (HiddenApiBypass).
+     * Если что-то не получилось, приложение просто остаётся на стандартном шрифте.
+     */
+    @SuppressWarnings({"unchecked", "rawtypes"})
+    public static void applyAppWide() {
+        if (appWideDone) {
+            return;
+        }
+        Typeface base = regular();
+        if (base == null) {
+            return;
+        }
+        try {
+            if (android.os.Build.VERSION.SDK_INT >= 28) {
+                org.lsposed.hiddenapibypass.HiddenApiBypass.addHiddenApiExemptions("L");
+            }
+        } catch (Throwable ignore) {
+        }
+        Typeface bold = Typeface.create(base, Typeface.BOLD);
+        Typeface italic = Typeface.create(base, Typeface.ITALIC);
+        Typeface boldItalic = Typeface.create(base, Typeface.BOLD_ITALIC);
+        boolean ok = false;
+        try {
+            java.lang.reflect.Method m = Typeface.class.getDeclaredMethod("setDefault", Typeface.class);
+            m.setAccessible(true);
+            m.invoke(null, base);
+            ok = true;
+        } catch (Throwable ignore) {
+        }
+        try {
+            java.lang.reflect.Field f = Typeface.class.getDeclaredField("sSystemFontMap");
+            f.setAccessible(true);
+            Object o = f.get(null);
+            if (o instanceof java.util.Map) {
+                java.util.HashMap<String, Typeface> copy = new java.util.HashMap<String, Typeface>((java.util.Map) o);
+                copy.put("sans-serif", base);
+                copy.put("sans-serif-light", base);
+                copy.put("sans-serif-thin", base);
+                copy.put("sans-serif-regular", base);
+                copy.put("sans-serif-medium", bold);
+                copy.put("sans-serif-black", bold);
+                copy.put("sans-serif-condensed", base);
+                f.set(null, copy);
+                ok = true;
+            }
+        } catch (Throwable ignore) {
+        }
+        String[] names = {"DEFAULT", "SANS_SERIF"};
+        for (String n : names) {
+            try {
+                java.lang.reflect.Field f = Typeface.class.getDeclaredField(n);
+                f.setAccessible(true);
+                f.set(null, base);
+            } catch (Throwable ignore) {
+            }
+        }
+        try {
+            java.lang.reflect.Field f = Typeface.class.getDeclaredField("DEFAULT_BOLD");
+            f.setAccessible(true);
+            f.set(null, bold);
+        } catch (Throwable ignore) {
+        }
+        try {
+            java.lang.reflect.Field f = Typeface.class.getDeclaredField("sDefaults");
+            f.setAccessible(true);
+            Typeface[] arr = (Typeface[]) f.get(null);
+            if (arr != null && arr.length >= 4) {
+                arr[Typeface.NORMAL] = base;
+                arr[Typeface.BOLD] = bold;
+                arr[Typeface.ITALIC] = italic;
+                arr[Typeface.BOLD_ITALIC] = boldItalic;
+            }
+        } catch (Throwable ignore) {
+        }
+        appWideDone = ok;
+    }
+
     /** Подмена шрифтов приложения: вызывается из AndroidUtilities.getTypeface. */
     public static Typeface override(String assetPath) {
         if (assetPath == null || ApplicationLoader.applicationContext == null) {
             return null;
         }
         String cur = current();
-        if (cur.length() == 0 || assetPath.contains("mono")) {
+        if (cur.length() == 0) {
+            return null;
+        }
+        applyAppWide();
+        if (assetPath.contains("mono")) {
             return null;
         }
         Typeface base = load(cur);
@@ -239,7 +324,9 @@ public class PikmiFonts {
                     public void onClick(DialogInterface dialog, int which) {
                         String f = files.get(which);
                         setFont(f);
-                        Toast.makeText(activity, "Шрифт выбран. Закрой приложение полностью и открой снова, чтобы он применился везде", Toast.LENGTH_LONG).show();
+                        appWideDone = false;
+                        applyAppWide();
+                        Toast.makeText(activity, "Шрифт выбран. Чтобы он применился везде, закрой приложение полностью и открой снова", Toast.LENGTH_LONG).show();
                     }
                 })
                 .setNegativeButton("Закрыть", null)
@@ -282,6 +369,18 @@ if TH.exists():
     else:
         print("  пропуск: chat_msgTextPaint не найден, текст сообщений останется стандартным")
         print(grep(r"chat_msgTextPaint = ", TH, 5))
+
+# ---------- ранний вызов из ApplicationLoader (необязательно) ----------
+AL = J / "messenger/ApplicationLoader.java"
+if AL.exists():
+    al = AL.read_text(encoding="utf-8")
+    rx = re.compile(r"(public static void postInitApplication\(\) \{)")
+    if len(rx.findall(al)) == 1:
+        al = rx.sub(lambda m: m.group(1) + "\n        org.telegram.messenger.PikmiFonts.applyAppWide();", al, count=1)
+        AL.write_text(al, encoding="utf-8")
+        print("  ok: ApplicationLoader.postInitApplication")
+    else:
+        print("  пропуск: postInitApplication не найден (шрифт применится при первом запросе шрифта)")
 
 # ---------- класс ----------
 PF.write_text(JAVA, encoding="utf-8")
