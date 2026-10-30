@@ -201,4 +201,25 @@ if "PG_BRAND" not in lc:
     print("название из языкового пакета: защита добавлена в %d метода(ов)" % len(targets))
 else:
     print("название из языкового пакета: уже применено")
+# ---------- 5. заголовки "Telegram" на экране ----------
+# Страховка: если заголовок собран не через AppName, подменяем его при установке в шапку.
+AB = Path("TMessagesProj/src/main/java/org/telegram/ui/ActionBar/ActionBar.java")
+if not AB.exists():
+    die("не найден ActionBar.java")
+ab = AB.read_text(encoding="utf-8")
+if "PG_TITLE" not in ab:
+    rx = re.compile(r"(public void setTitle\(CharSequence (\w+)\) \{)")
+    if len(rx.findall(ab)) != 1:
+        hint = subprocess.run(["grep", "-n", "-E", "void setTitle\\(", str(AB)], capture_output=True, text=True).stdout
+        print("--- подсказка для разработчика ---")
+        print(hint)
+        die("ActionBar: не нашёл setTitle(CharSequence) ровно один раз")
+    ab = rx.sub(lambda m: m.group(1) + "\n        if (%s != null && \"Telegram\".contentEquals(%s)) { %s = \"%s\"; } // PG_TITLE" % (m.group(2), m.group(2), m.group(2), NAME), ab, count=1)
+    AB.write_text(ab, encoding="utf-8")
+    print("заголовок шапки: подмена Telegram -> %s добавлена" % NAME)
+else:
+    print("заголовок шапки: уже применено")
+
+print("--- откуда берётся название (для справки) ---")
+print(subprocess.run("grep -rn -E 'R\\.string\\.AppName|\"AppName\"' TMessagesProj/src/main/java | head -40", shell=True, capture_output=True, text=True).stdout)
 print("Готово: PikmiGram")
