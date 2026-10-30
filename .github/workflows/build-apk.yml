@@ -16,6 +16,14 @@ jobs:
       - name: Add shadow ban list menu
         run: python3 .github/scripts/shadowban_list.py
 
+      - name: Shadow ban - hide from typing, seen, replies, reactions
+        run: python3 .github/scripts/shadowban_extra.py
+
+      - name: PikmiGram branding (name and icon)
+        run: |
+          pip install pillow
+          python3 .github/scripts/pikmigram_brand.py
+
       - uses: actions/setup-java@v4
         with:
           distribution: temurin

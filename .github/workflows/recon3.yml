@@ -1,0 +1,35 @@
+name: Recon 3 (settings entry, themes, live reactions)
+
+on:
+  workflow_dispatch:
+
+jobs:
+  recon:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Survey code (part 3)
+        run: |
+          set +e
+          J=TMessagesProj/src/main/java/org/telegram
+          sec() { echo; echo "######## $*"; }
+          around() { L=$(grep -n -E "$2" "$1" | head -1 | cut -d: -f1); if [ -n "$L" ]; then echo "--- $1 @ $L"; sed -n "$((L-$3)),$((L+$4))p" "$1"; else echo "--- NOT FOUND: $2 in $1"; fi; }
+
+          sec "drawer items"
+          around $J/ui/Adapters/DrawerLayoutAdapter.java "R.string.Settings\)" 6 10
+          grep -n "new Item(\|id ==" $J/ui/Adapters/DrawerLayoutAdapter.java | head -40
+          sec "drawer click in LaunchActivity"
+          grep -n "SettingsActivity\|id == 8\|id == 9" $J/ui/LaunchActivity.java | head -20
+          around $J/ui/LaunchActivity.java "id == 8\)" 4 10
+          sec "settings screen file"
+          ls $J/ui | grep -i "^Settings\|ProfileActivity\|PrivacySettings" | head
+          around $J/ui/SettingsActivity.java "class SettingsActivity" 1 25
+          sec "theme apply API"
+          grep -n "public static ThemeInfo applyThemeFile\|public static void applyTheme(\|public static ThemeInfo fillThemeValues\|public static boolean applyThemeFile" $J/ui/ActionBar/Theme.java | head
+          grep -n "applyThemeFile" $J/ui/*.java | head -8
+          sec "live reactions"
+          grep -n "public static abstract class MessageReactions\|public static class TL_messageReactions " $J/tgnet/TLRPC.java | head
+          around $J/ui/Components/Reactions/ReactionsLayoutInBubble.java "public void setMessage\(" 2 22
+          grep -n "didUpdateReactions" $J/ui/ChatActivity.java | head
+          around $J/ui/ChatActivity.java "id == NotificationCenter.didUpdateReactions" 2 40
