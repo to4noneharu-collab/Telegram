@@ -58,6 +58,9 @@ jobs:
       - name: PikmiGram fonts menu
         run: python3 .github/scripts/pikmi_fonts.py
 
+      - name: Remove account limit
+        run: python3 .github/scripts/pikmi_accounts.py
+
       - uses: actions/setup-java@v4
         with:
           distribution: temurin

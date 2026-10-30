@@ -48,6 +48,8 @@ jobs:
         test "$COUNT" -ge 3 || { echo "Слишком мало шрифтов скачалось"; exit 1; }
     - name: PikmiGram fonts menu
       run: python3 .github/scripts/pikmi_fonts.py
+    - name: Remove account limit
+      run: python3 .github/scripts/pikmi_accounts.py
     - uses: actions/setup-java@v4
       with:
         distribution: temurin
