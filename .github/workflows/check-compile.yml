@@ -97,6 +97,11 @@ jobs:
           plugins.withId('com.android.library') {
             project.android.defaultConfig.ndk.abiFilters.add('arm64-v8a')
           }
+          afterEvaluate { p ->
+            if (p.path == ':TMessagesProj') {
+              p.dependencies.add('implementation', 'org.lsposed.hiddenapibypass:hiddenapibypass:6.1')
+            }
+          }
         }
         EOF
     - name: Compile Java only (fast check)
