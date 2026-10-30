@@ -108,6 +108,8 @@ for f in sorted(RES.glob("values*/strings.xml")):
     t = f.read_text(encoding="utf-8")
     n = re.sub(r'(<string name="AppName">)[^<]*(</string>)', r"\g<1>%s\g<2>" % NAME, t)
     n = re.sub(r'(<string name="AppNameBeta">)[^<]*(</string>)', r"\g<1>%s Beta\g<2>" % NAME, n)
+    # строки, значение которых ровно "Telegram" (подписи в интерфейсе)
+    n = re.sub(r'(<string name="[A-Za-z0-9_]+">)Telegram(</string>)', r"\g<1>%s\g<2>" % NAME, n)
     if n != t:
         f.write_text(n, encoding="utf-8")
         names += 1
