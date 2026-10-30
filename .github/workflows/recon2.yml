@@ -1,0 +1,80 @@
+name: Recon 2 (code survey, no build)
+
+on:
+  workflow_dispatch:
+
+jobs:
+  recon:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Survey code (part 2)
+        run: |
+          set +e
+          J=TMessagesProj/src/main/java/org/telegram
+          MC=$J/messenger/MessagesController.java
+          sec() { echo; echo "######## $*"; }
+          # печатает окно строк вокруг первой строки, подходящей под regex
+          around() { # файл regex до после
+            L=$(grep -n -E "$2" "$1" | head -1 | cut -d: -f1)
+            if [ -n "$L" ]; then echo "--- $1 @ $L ($2)"; sed -n "$((L-$3)),$((L+$4))p" "$1"; else echo "--- NOT FOUND: $2 in $1"; fi
+          }
+          range() { echo "--- $1 [$2-$3]"; sed -n "$2,$3p" "$1"; }
+
+          sec "typing: handler in processUpdateArray"
+          around $MC "baseUpdate instanceof TL_update.TL_updateUserTyping \|\| baseUpdate instanceof TL_update.TL_updateChatUserTyping" 3 75
+          sec "typing: PrintingUser class"
+          around $MC "public static class PrintingUser" 2 14
+          sec "typing: updatePrintingUsersWithNewMessages"
+          around $MC "private boolean updatePrintingUsersWithNewMessages" 2 70
+          sec "typing: updatePrintingStrings"
+          around $MC "private void updatePrintingStrings" 2 90
+
+          sec "seen-by: MessageSeenView"
+          wc -l $J/ui/MessageSeenView.java
+          sed -n 1,330p $J/ui/MessageSeenView.java
+          sec "seen-by: ReactedHeaderView"
+          range $J/ui/Components/ReactedHeaderView.java 100 330
+          sec "reactions list: ReactedUsersListView"
+          range $J/ui/Components/ReactedUsersListView.java 240 360
+
+          sec "reply: MessageObject ctor"
+          range $J/messenger/MessageObject.java 1905 1945
+          sec "reply: ChatActivity (empty reply + dict)"
+          around $J/ui/ChatActivity.java "object.replyMessageObject = emptyMessage" 28 14
+          around $J/ui/ChatActivity.java "messageObject.replyMessageObject = messagesDict\[0\]" 12 12
+          sec "reply: ChatActivity around ShadowBan.filter calls"
+          around $J/ui/ChatActivity.java "ShadowBan.filter\(messArr\)" 8 8
+          around $J/ui/ChatActivity.java "ShadowBan.filter\(arr\)" 12 12
+          sec "reply: MessagesController 12154 / MediaDataController"
+          around $MC "msg.replyMessageObject = objects.get\(j\)" 12 8
+          around $J/messenger/MediaDataController.java "object.replyMessageObject = messageObject;" 10 6
+          around $J/messenger/MediaDataController.java "messageObject.replyMessageObject = messages.get\(j\)" 8 6
+
+          sec "reactions: TLRPC classes"
+          around $J/tgnet/TLRPC.java "public static class MessageReactions " 2 30
+          grep -n "class ReactionCount\|class MessagePeerReaction\|class TL_reactionCount\|class TL_messagePeerReaction" $J/tgnet/TLRPC.java | head
+          L=$(grep -n -E "class MessagePeerReaction " $J/tgnet/TLRPC.java | head -1 | cut -d: -f1); [ -n "$L" ] && sed -n "$L,$((L+14))p" $J/tgnet/TLRPC.java
+          L=$(grep -n -E "class ReactionCount " $J/tgnet/TLRPC.java | head -1 | cut -d: -f1); [ -n "$L" ] && sed -n "$L,$((L+14))p" $J/tgnet/TLRPC.java
+          sec "reactions: MessageObject helpers"
+          range $J/messenger/MessageObject.java 12440 12545
+          sec "reactions: updates in MessagesController"
+          around $MC "baseUpdate instanceof TL_update.TL_updateMessageReactions" 2 40
+          sec "reactions: ReactionsLayoutInBubble"
+          range $J/ui/Components/Reactions/ReactionsLayoutInBubble.java 240 330
+
+          sec "settings: SettingsActivity rows"
+          grep -n "languageRow\|privacyRow\|devicesRow\|settingsSectionRow" $J/ui/SettingsActivity.java | head -50
+          around $J/ui/SettingsActivity.java "private void updateRows" 2 80
+
+          sec "icons: foreground/background/dr files"
+          find TMessagesProj/src -path "*/res/*" \( -name "icon_foreground*" -o -name "icon_background*" -o -name "icon_plane*" -o -name "ic_launcher_dr*" \) | sort
+          for f in $(find TMessagesProj/src -path "*/res/drawable*" -name "icon_background*.xml" | head -4); do echo "--- $f"; cat "$f"; done
+          python3 - << 'PY'
+          import glob, struct
+          for p in sorted(glob.glob('TMessagesProj/src/main/res/mipmap-*/ic_launcher*.png') + glob.glob('TMessagesProj/src/main/res/mipmap-*/icon_foreground*.png')):
+              if 'icon_' in p.split('/')[-1] and 'foreground' not in p: continue
+              d = open(p, 'rb').read(32)
+              print(p, struct.unpack('>II', d[16:24]))
+          PY
