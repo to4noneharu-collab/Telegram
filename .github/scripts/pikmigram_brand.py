@@ -104,8 +104,11 @@ def save(im, path):
 
 # ---------- 1. название ----------
 names = 0
+found = 0
 for f in sorted(RES.glob("values*/strings.xml")):
     t = f.read_text(encoding="utf-8")
+    if 'name="AppName"' in t:
+        found += 1
     n = re.sub(r'(<string name="AppName">)[^<]*(</string>)', r"\g<1>%s\g<2>" % NAME, t)
     n = re.sub(r'(<string name="AppNameBeta">)[^<]*(</string>)', r"\g<1>%s Beta\g<2>" % NAME, n)
     # строки, значение которых ровно "Telegram" (подписи в интерфейсе)
@@ -113,7 +116,7 @@ for f in sorted(RES.glob("values*/strings.xml")):
     if n != t:
         f.write_text(n, encoding="utf-8")
         names += 1
-if names == 0:
+if found == 0:
     die("не нашёл строку AppName ни в одном strings.xml")
 print("название: обновлено файлов strings.xml: %d" % names)
 
@@ -165,37 +168,37 @@ else:
     print("предупреждение: drawable/icon_background_sa.xml не найден, фон не менялся")
 # ---------- 4. название из языкового пакета ----------
 # Telegram берёт строки сначала из языкового пакета с сервера (там AppName = "Telegram"),
-# и только потом из ресурсов. Поэтому подменяем значение прямо при чтении.
+# и только потом из ресурсов. Поэтому ставим проверку в начало всех методов получения строки.
 import subprocess
 
 LC = Path("TMessagesProj/src/main/java/org/telegram/messenger/LocaleController.java")
 if not LC.exists():
     die("не найден LocaleController.java")
 lc = LC.read_text(encoding="utf-8")
-if "pgBrand(" not in lc:
-    rx_class = re.compile(r"(public class LocaleController[^{]*\{)")
-    rx_get = re.compile(r"localeValues\.get\((\w+)\)")
-    n_get = len(rx_get.findall(lc))
-    if len(rx_class.findall(lc)) != 1 or n_get == 0:
-        hint = subprocess.run(["grep", "-n", "-E", "localeValues|public class LocaleController|String getString", str(LC)], capture_output=True, text=True).stdout
-        print("--- подсказка для разработчика ---")
-        print("\n".join(hint.splitlines()[:40]))
-        die("LocaleController: не нашёл ожидаемые места (class: %d, localeValues.get: %d)" % (len(rx_class.findall(lc)), n_get))
-    helper = """
-    private static String pgBrand(String key, String value) {
-        if ("AppName".equals(key)) {
-            return "%s";
-        }
-        if ("AppNameBeta".equals(key)) {
-            return "%s Beta";
-        }
-        return value;
-    }
-""" % (NAME, NAME)
-    lc = rx_get.sub(lambda m: "pgBrand(%s, localeValues.get(%s))" % (m.group(1), m.group(1)), lc)
-    lc = rx_class.sub(lambda m: m.group(1) + helper, lc, count=1)
+GUARD_KEY = """
+        if ("AppName".equals(key)) { return "%s"; } // PG_BRAND
+        if ("AppNameBeta".equals(key)) { return "%s Beta"; } // PG_BRAND""" % (NAME, NAME)
+GUARD_RES = """
+        if (res == R.string.AppName) { return "%s"; } // PG_BRAND""" % NAME
+targets = [
+    (r"(private String getStringInternal\(String key, int res\) \{)", GUARD_KEY),
+    (r"(private String getStringInternal\(String key, String fallback, int res\) \{)", GUARD_KEY),
+    (r"(public static String getString\(String key, @StringRes int res\) \{)", GUARD_KEY),
+    (r"(public static String getString\(String key\) \{)", GUARD_KEY),
+    (r"(private String getStringV2\(String key, @StringRes int stringRes, String fallback\) \{)", GUARD_KEY),
+    (r"(public static String getString\(@StringRes int res\) \{)", GUARD_RES),
+]
+if "PG_BRAND" not in lc:
+    for pattern, guard in targets:
+        rx = re.compile(pattern)
+        if len(rx.findall(lc)) != 1:
+            hint = subprocess.run(["grep", "-n", "-E", "String getString|getStringInternal|getStringV2", str(LC)], capture_output=True, text=True).stdout
+            print("--- подсказка для разработчика ---")
+            print("\n".join(hint.splitlines()[:40]))
+            die("LocaleController: не найден метод по шаблону " + pattern)
+        lc = rx.sub(lambda m, g=guard: m.group(1) + g, lc, count=1)
     LC.write_text(lc, encoding="utf-8")
-    print("название из языкового пакета: подменено мест чтения: %d" % n_get)
+    print("название из языкового пакета: защита добавлена в %d метода(ов)" % len(targets))
 else:
-    print("название из языкового пакета: уже подменено")
+    print("название из языкового пакета: уже применено")
 print("Готово: PikmiGram")
