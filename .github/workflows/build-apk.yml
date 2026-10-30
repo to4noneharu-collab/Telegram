@@ -24,6 +24,40 @@ jobs:
           pip install pillow
           python3 .github/scripts/pikmigram_brand.py
 
+      - name: Download fonts (OFL, Google Fonts)
+        run: |
+          D=TMessagesProj/src/main/assets/fonts
+          mkdir -p "$D"
+          B=https://raw.githubusercontent.com/google/fonts/main/ofl
+          get() {
+            if curl -fsSL --retry 2 -o "$D/pg_$1.ttf" "$B/$2" && [ "$(stat -c%s "$D/pg_$1.ttf")" -gt 20000 ]; then
+              echo "ok   $1"
+            else
+              echo "skip $1"; rm -f "$D/pg_$1.ttf"
+            fi
+          }
+          get pacifico pacifico/Pacifico-Regular.ttf
+          get marckscript marckscript/MarckScript-Regular.ttf
+          get caveat "caveat/Caveat%5Bwght%5D.ttf"
+          get lobster lobster/Lobster-Regular.ttf
+          get amaticsc amaticsc/AmaticSC-Regular.ttf
+          get neucha neucha/Neucha-Regular.ttf
+          get nunito "nunito/Nunito%5Bwght%5D.ttf"
+          get comfortaa "comfortaa/Comfortaa%5Bwght%5D.ttf"
+          get philosopher philosopher/Philosopher-Regular.ttf
+          get marmelad marmelad/Marmelad-Regular.ttf
+          get badscript badscript/BadScript-Regular.ttf
+          get pangolin pangolin/Pangolin-Regular.ttf
+          get kurale kurale/Kurale-Regular.ttf
+          get ruslandisplay ruslandisplay/RuslanDisplay.ttf
+          get underdog underdog/Underdog-Regular.ttf
+          COUNT=$(ls "$D"/pg_*.ttf 2>/dev/null | wc -l)
+          echo "Скачано шрифтов: $COUNT"
+          test "$COUNT" -ge 3 || { echo "Слишком мало шрифтов скачалось"; exit 1; }
+
+      - name: PikmiGram fonts menu
+        run: python3 .github/scripts/pikmi_fonts.py
+
       - uses: actions/setup-java@v4
         with:
           distribution: temurin

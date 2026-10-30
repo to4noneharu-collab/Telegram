@@ -1,0 +1,105 @@
+name: Check compile (fast, Java only)
+'on':
+  workflow_dispatch:
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        submodules: recursive
+    - name: Add shadow ban list menu
+      run: python3 .github/scripts/shadowban_list.py
+    - name: Shadow ban - hide from typing, seen, replies, reactions
+      run: python3 .github/scripts/shadowban_extra.py
+    - name: PikmiGram branding (name and icon)
+      run: |
+        pip install pillow
+        python3 .github/scripts/pikmigram_brand.py
+    - name: Download fonts (OFL, Google Fonts)
+      run: |
+        D=TMessagesProj/src/main/assets/fonts
+        mkdir -p "$D"
+        B=https://raw.githubusercontent.com/google/fonts/main/ofl
+        get() {
+          if curl -fsSL --retry 2 -o "$D/pg_$1.ttf" "$B/$2" && [ "$(stat -c%s "$D/pg_$1.ttf")" -gt 20000 ]; then
+            echo "ok   $1"
+          else
+            echo "skip $1"; rm -f "$D/pg_$1.ttf"
+          fi
+        }
+        get pacifico pacifico/Pacifico-Regular.ttf
+        get marckscript marckscript/MarckScript-Regular.ttf
+        get caveat "caveat/Caveat%5Bwght%5D.ttf"
+        get lobster lobster/Lobster-Regular.ttf
+        get amaticsc amaticsc/AmaticSC-Regular.ttf
+        get neucha neucha/Neucha-Regular.ttf
+        get nunito "nunito/Nunito%5Bwght%5D.ttf"
+        get comfortaa "comfortaa/Comfortaa%5Bwght%5D.ttf"
+        get philosopher philosopher/Philosopher-Regular.ttf
+        get marmelad marmelad/Marmelad-Regular.ttf
+        get badscript badscript/BadScript-Regular.ttf
+        get pangolin pangolin/Pangolin-Regular.ttf
+        get kurale kurale/Kurale-Regular.ttf
+        get ruslandisplay ruslandisplay/RuslanDisplay.ttf
+        get underdog underdog/Underdog-Regular.ttf
+        COUNT=$(ls "$D"/pg_*.ttf 2>/dev/null | wc -l)
+        echo "Скачано шрифтов: $COUNT"
+        test "$COUNT" -ge 3 || { echo "Слишком мало шрифтов скачалось"; exit 1; }
+    - name: PikmiGram fonts menu
+      run: python3 .github/scripts/pikmi_fonts.py
+    - uses: actions/setup-java@v4
+      with:
+        distribution: temurin
+        java-version: 17
+    - uses: gradle/actions/setup-gradle@v4
+    - name: Install NDK and CMake
+      run: |
+        SDKM=$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager
+        yes | $SDKM --licenses > /dev/null || true
+        $SDKM "ndk;27.2.12479018" "cmake;3.22.1"
+    - name: Set own api_id / api_hash
+      env:
+        TG_API_ID: ${{ secrets.TG_API_ID }}
+        TG_API_HASH: ${{ secrets.TG_API_HASH }}
+      run: |
+        test -n "$TG_API_ID" && test -n "$TG_API_HASH" || { echo "Add TG_API_ID and TG_API_HASH secrets (my.telegram.org)"; exit 1; }
+        F=TMessagesProj/src/main/java/org/telegram/messenger/BuildVars.java
+        sed -i "s/public static int APP_ID = .*;/public static int APP_ID = ${TG_API_ID};/" $F
+        sed -i "s/public static String APP_HASH = .*;/public static String APP_HASH = \"${TG_API_HASH}\";/" $F
+    - name: Change package name
+      run: sed -i 's/^APP_PACKAGE=.*/APP_PACKAGE=org.shadowgram.messenger/' gradle.properties
+    - name: Fix google-services.json package names
+      run: |
+        find . -name google-services.json -not -path "*/build/*" | while read -r f; do
+          echo "Patching $f"
+          python3 - "$f" << 'PY'
+        import json, sys, copy
+        p = sys.argv[1]
+        d = json.load(open(p, encoding="utf-8"))
+        base = d["client"][0]
+        clients = []
+        for pkg in ["org.shadowgram.messenger.web", "org.shadowgram.messenger", "org.telegram.messenger", "org.telegram.messenger.web"]:
+            c = copy.deepcopy(base)
+            c["client_info"]["android_client_info"]["package_name"] = pkg
+            clients.append(c)
+        d["client"] = clients
+        json.dump(d, open(p, "w", encoding="utf-8"), indent=2)
+        PY
+        done
+    - name: Speed up build (arm64 only, no debug symbols)
+      run: |
+        find . -name build.gradle -not -path "*/build/*" -exec sed -i -E 's/abiFilters .*/abiFilters "arm64-v8a"/' {} +
+        sed -i "s/ndk.debugSymbolLevel = 'FULL'/ndk.debugSymbolLevel = 'NONE'/" TMessagesProj_App/build.gradle
+        grep -rn "abiFilters" --include=build.gradle . | grep -v "/build/" || true
+        cat > "$GITHUB_WORKSPACE/abi.init.gradle" << 'EOF'
+        allprojects {
+          plugins.withId('com.android.library') {
+            project.android.defaultConfig.ndk.abiFilters.add('arm64-v8a')
+          }
+        }
+        EOF
+    - name: Compile Java only (fast check)
+      run: |
+        chmod +x gradlew
+        ./gradlew :TMessagesProj:compileReleaseJavaWithJavac --no-daemon --parallel --build-cache -I "$GITHUB_WORKSPACE/abi.init.gradle" -Dorg.gradle.jvmargs="-Xmx4g"
