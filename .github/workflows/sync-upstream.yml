@@ -1,0 +1,86 @@
+name: Sync with official Telegram
+
+# Следит за официальным репозиторием Telegram. Когда там выходит новая версия:
+# 1) подтягивает её в твой репозиторий,
+# 2) проверяет, что все патчи PikmiGram накладываются на новый код,
+# 3) запускает сборку, после которой апдейтер в приложении предложит обновиться.
+
+on:
+  schedule:
+    - cron: '23 */6 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  actions: write
+  issues: write
+
+env:
+  UPSTREAM_REPO: DrKLO/Telegram
+  UPSTREAM_BRANCH: master
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Fetch official Telegram
+        id: up
+        run: |
+          git remote add upstream "https://github.com/${UPSTREAM_REPO}.git"
+          git fetch upstream "$UPSTREAM_BRANCH" --no-tags
+          UP=$(git rev-parse "upstream/$UPSTREAM_BRANCH")
+          echo "sha=${UP:0:7}" >> "$GITHUB_OUTPUT"
+          if git merge-base --is-ancestor "$UP" HEAD; then
+            echo "Новых изменений в официальном Telegram нет"
+            echo "uptodate=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "Есть новая версия официального Telegram: ${UP:0:7}"
+            echo "uptodate=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Merge official changes
+        if: steps.up.outputs.uptodate == 'false'
+        run: |
+          git config user.name "pikmigram-bot"
+          git config user.email "pikmigram-bot@users.noreply.github.com"
+          if ! git merge --no-edit "upstream/$UPSTREAM_BRANCH"; then
+            echo "Конфликт при слиянии с официальным Telegram"
+            git diff --name-only --diff-filter=U
+            git merge --abort
+            exit 1
+          fi
+
+      - name: Check that PikmiGram patches still apply
+        if: steps.up.outputs.uptodate == 'false'
+        run: |
+          pip install pillow
+          for s in shadowban_list shadowban_extra pikmigram_brand pikmi_fonts pikmi_crash pikmi_accounts pikmi_updater; do
+            echo "=== $s"
+            python3 ".github/scripts/$s.py" || { echo "Патч $s не применился к новой версии"; exit 1; }
+          done
+          # откатываем результат проверки: патчи применяются заново при сборке
+          git reset --hard HEAD
+          git clean -fd
+
+      - name: Push and start the build
+        if: steps.up.outputs.uptodate == 'false'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          git push origin "HEAD:${{ github.ref_name }}"
+          gh workflow run build-apk.yml --ref "${{ github.ref_name }}"
+
+      - name: Report problem
+        if: failure() && steps.up.outputs.uptodate == 'false'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          T="Обновление Telegram ${{ steps.up.outputs.sha }}: нужно вмешательство"
+          N=$(gh issue list --state open --search "$T in:title" --json number --jq length 2>/dev/null || echo 0)
+          if [ "$N" = "0" ]; then
+            gh issue create --title "$T" --body "Вышла новая версия официального Telegram, но автоматически подтянуть её не удалось (конфликт слияния или патч не применился). Лог: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" || true
+          fi

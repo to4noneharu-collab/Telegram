@@ -4,14 +4,25 @@ on:
   push:
     branches: [master, main]
   workflow_dispatch:
+    inputs:
+      skip:
+        description: 'Отключить функции для поиска причины вылета (через запятую): accounts, updater, appwide, title, locale'
+        required: false
+        default: ''
+
+permissions:
+  contents: write
 
 jobs:
   build:
     runs-on: ubuntu-latest
+    env:
+      PG_SKIP: ${{ github.event.inputs.skip }}
     steps:
       - uses: actions/checkout@v4
         with:
           submodules: recursive
+          fetch-depth: 50
 
       - name: Add shadow ban list menu
         run: python3 .github/scripts/shadowban_list.py
@@ -58,8 +69,16 @@ jobs:
       - name: PikmiGram fonts menu
         run: python3 .github/scripts/pikmi_fonts.py
 
+      - name: Crash log (saves Java crash trace to Downloads)
+        run: python3 .github/scripts/pikmi_crash.py
+
       - name: Remove account limit
+        if: ${{ !contains(github.event.inputs.skip, 'accounts') }}
         run: python3 .github/scripts/pikmi_accounts.py
+
+      - name: Built-in updater (GitHub Releases)
+        if: ${{ !contains(github.event.inputs.skip, 'updater') }}
+        run: python3 .github/scripts/pikmi_updater.py
 
       - uses: actions/setup-java@v4
         with:
@@ -150,10 +169,35 @@ jobs:
           echo "== outputs dirs =="
           find "$GITHUB_WORKSPACE" -type d -path "*/build/outputs/*" | head -30
 
+      - name: Prepare release APK
+        run: |
+          APK=$(find . -path "*/outputs/apk/afat/release/*.apk" | head -1)
+          [ -z "$APK" ] && APK=$(find . -path "*/intermediates/apk/afat/release/*.apk" | head -1)
+          test -n "$APK" || { echo "APK не найден"; exit 1; }
+          echo "Беру $APK"
+          mkdir -p dist
+          cp "$APK" dist/PikmiGram.apk
+          ls -l dist
+
       - uses: actions/upload-artifact@v4
         with:
           name: apk
-          path: |
-            **/*.apk
-            !**/tlottie/**
+          path: dist/PikmiGram.apk
           if-no-files-found: error
+
+      - name: Release notes
+        run: |
+          VER=$(grep -E '^APP_VERSION_NAME' gradle.properties | cut -d= -f2)
+          {
+            echo "Telegram $VER"
+            git log -n 1 --no-merges --pretty=format:'%s'
+          } > release-notes.txt
+          cat release-notes.txt
+
+      - name: Publish GitHub Release (for the in-app updater)
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: build-${{ github.run_number }}
+          name: PikmiGram build ${{ github.run_number }}
+          body_path: release-notes.txt
+          files: dist/PikmiGram.apk
