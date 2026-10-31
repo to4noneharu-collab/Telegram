@@ -13,11 +13,12 @@ from pathlib import Path
 
 import os
 
+# До 5 аккаунтов нативный код Telegram уже поддерживает (как у Premium). Больше 5 экспериментально.
 try:
-    LIMIT = int(os.environ.get("PG_ACCOUNT_LIMIT") or 16)
+    LIMIT = int(os.environ.get("PG_ACCOUNT_LIMIT") or 5)
 except ValueError:
-    LIMIT = 16
-LIMIT = max(6, min(32, LIMIT))
+    LIMIT = 5
+LIMIT = max(5, min(32, LIMIT))
 SKIP = os.environ.get("PG_SKIP", "")
 
 UC = Path("TMessagesProj/src/main/java/org/telegram/messenger/UserConfig.java")
@@ -62,6 +63,9 @@ print(grep(r"getMaxAccountCount|MAX_ACCOUNT_DEFAULT_COUNT|MAX_ACCOUNT_COUNT\s*\)
 # ---------- native ----------
 if "accnative" in SKIP:
     print("native: пропущено (PG_SKIP)")
+    sys.exit(0)
+if LIMIT <= 5:
+    print("native: не нужно (лимит %d поддерживается штатно)" % LIMIT)
     sys.exit(0)
 if not CM.exists():
     die("не найден ConnectionsManager.cpp")

@@ -67,15 +67,10 @@ public class PikmiCrash {
         } catch (Throwable ignore) {
         }
         if (Build.VERSION.SDK_INT >= 30) {
-            new Thread(new Runnable() {
-                @Override
-                public void run() {
-                    try {
-                        readLastExit(ctx);
-                    } catch (Throwable ignore) {
-                    }
-                }
-            }).start();
+            try {
+                readLastExit(ctx);
+            } catch (Throwable ignore) {
+            }
         }
     }
 
