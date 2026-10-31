@@ -6,9 +6,13 @@ on:
   workflow_dispatch:
     inputs:
       skip:
-        description: 'Отключить функции для поиска причины вылета (через запятую): accounts, updater, appwide, title, locale'
+        description: 'Отключить функции для поиска причины вылета (через запятую): accounts (всё про аккаунты), accjava, accnative, updater, appwide, title, locale'
         required: false
         default: ''
+      account_limit:
+        description: 'Максимум аккаунтов (6-32)'
+        required: false
+        default: '16'
 
 permissions:
   contents: write
@@ -18,6 +22,7 @@ jobs:
     runs-on: ubuntu-latest
     env:
       PG_SKIP: ${{ github.event.inputs.skip }}
+      PG_ACCOUNT_LIMIT: ${{ github.event.inputs.account_limit }}
     steps:
       - uses: actions/checkout@v4
         with:
