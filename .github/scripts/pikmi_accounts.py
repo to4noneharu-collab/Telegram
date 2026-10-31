@@ -11,7 +11,14 @@ import subprocess
 import sys
 from pathlib import Path
 
-LIMIT = 16
+import os
+
+try:
+    LIMIT = int(os.environ.get("PG_ACCOUNT_LIMIT") or 16)
+except ValueError:
+    LIMIT = 16
+LIMIT = max(6, min(32, LIMIT))
+SKIP = os.environ.get("PG_SKIP", "")
 
 UC = Path("TMessagesProj/src/main/java/org/telegram/messenger/UserConfig.java")
 CM = Path("TMessagesProj/jni/tgnet/ConnectionsManager.cpp")
@@ -34,7 +41,9 @@ def grep(pattern, target, n=40):
 if not UC.exists():
     die("не найден UserConfig.java")
 uc = UC.read_text(encoding="utf-8")
-if "PG_ACCOUNTS" in uc:
+if "accjava" in SKIP:
+    print("Java: пропущено (PG_SKIP)")
+elif "PG_ACCOUNTS" in uc:
     print("Java: уже применено")
 else:
     rx_def = re.compile(r"(MAX_ACCOUNT_DEFAULT_COUNT\s*=\s*)\d+;")
@@ -51,6 +60,9 @@ print("--- где ещё упоминается лимит (для справк�
 print(grep(r"getMaxAccountCount|MAX_ACCOUNT_DEFAULT_COUNT|MAX_ACCOUNT_COUNT\s*\)|>= *3\b.*[Aa]ccount", "TMessagesProj/src/main/java", 30))
 
 # ---------- native ----------
+if "accnative" in SKIP:
+    print("native: пропущено (PG_SKIP)")
+    sys.exit(0)
 if not CM.exists():
     die("не найден ConnectionsManager.cpp")
 cm = CM.read_text(encoding="utf-8")
