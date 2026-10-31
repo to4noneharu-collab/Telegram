@@ -118,6 +118,7 @@ public class PikmiFonts {
         return load(current());
     }
 
+    private static final boolean APPWIDE = @APPWIDE@;
     private static volatile boolean appWideDone;
 
     /**
@@ -127,7 +128,7 @@ public class PikmiFonts {
      */
     @SuppressWarnings({"unchecked", "rawtypes"})
     public static void applyAppWide() {
-        if (appWideDone) {
+        if (!APPWIDE || appWideDone) {
             return;
         }
         Typeface base = regular();
@@ -383,7 +384,9 @@ if AL.exists():
         print("  пропуск: postInitApplication не найден (шрифт применится при первом запросе шрифта)")
 
 # ---------- класс ----------
-PF.write_text(JAVA, encoding="utf-8")
+import os
+appwide = "appwide" not in os.environ.get("PG_SKIP", "")
+PF.write_text(JAVA.replace("@APPWIDE@", "true" if appwide else "false"), encoding="utf-8")
 print("  ok: PikmiFonts.java")
 
 # ---------- ChatActivity: пункт меню ----------

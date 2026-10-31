@@ -169,6 +169,7 @@ else:
 # ---------- 4. название из языкового пакета ----------
 # Telegram берёт строки сначала из языкового пакета с сервера (там AppName = "Telegram"),
 # и только потом из ресурсов. Поэтому ставим проверку в начало всех методов получения строки.
+import os
 import subprocess
 
 LC = Path("TMessagesProj/src/main/java/org/telegram/messenger/LocaleController.java")
@@ -188,7 +189,9 @@ targets = [
     (r"(private String getStringV2\(String key, @StringRes int stringRes, String fallback\) \{)", GUARD_KEY),
     (r"(public static String getString\(@StringRes int res\) \{)", GUARD_RES),
 ]
-if "PG_BRAND" not in lc:
+if "locale" in os.environ.get("PG_SKIP", ""):
+    print("название из языкового пакета: пропущено (PG_SKIP)")
+elif "PG_BRAND" not in lc:
     for pattern, guard in targets:
         rx = re.compile(pattern)
         if len(rx.findall(lc)) != 1:
@@ -203,7 +206,12 @@ else:
     print("название из языкового пакета: уже применено")
 # ---------- 5. заголовки "Telegram" на экране ----------
 # Страховка: если заголовок собран не через AppName, подменяем его при установке в шапку.
+import os
 AB = Path("TMessagesProj/src/main/java/org/telegram/ui/ActionBar/ActionBar.java")
+if "title" in os.environ.get("PG_SKIP", ""):
+    print("заголовок шапки: пропущено (PG_SKIP)")
+    print("Готово: PikmiGram")
+    sys.exit(0)
 if not AB.exists():
     die("не найден ActionBar.java")
 ab = AB.read_text(encoding="utf-8")
