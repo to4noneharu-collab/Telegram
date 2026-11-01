@@ -59,6 +59,8 @@ jobs:
       run: python3 .github/scripts/pikmi_updater.py
     - name: PikmiGram chats menu (fonts, shadow ban list, updates)
       run: python3 .github/scripts/pikmi_menu.py
+    - name: Remove duplicate per-message menu items
+      run: python3 .github/scripts/pikmi_cleanup_menu.py
     - name: Save one-time photos and videos
       run: python3 .github/scripts/pikmi_savemedia.py
     - uses: actions/setup-java@v4

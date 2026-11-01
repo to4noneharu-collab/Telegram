@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
     inputs:
       skip:
-        description: 'Отключить функции для поиска причины вылета (через запятую): accounts (всё про аккаунты), accjava, accnative, updater, appwide, title, locale, screens, silentshot, chatsmenu, savemedia'
+        description: 'Отключить функции для поиска причины вылета (через запятую): accounts (всё про аккаунты), accjava, accnative, updater, appwide, title, locale, screens, silentshot, chatsmenu, cleanupmenu, savemedia'
         required: false
         default: ''
       account_limit:
@@ -92,6 +92,10 @@ jobs:
       - name: PikmiGram chats menu (fonts, shadow ban list, updates)
         if: ${{ !contains(github.event.inputs.skip, 'chatsmenu') }}
         run: python3 .github/scripts/pikmi_menu.py
+
+      - name: Remove duplicate per-message menu items
+        if: ${{ !contains(github.event.inputs.skip, 'cleanupmenu') }}
+        run: python3 .github/scripts/pikmi_cleanup_menu.py
 
       - name: Save one-time photos and videos
         if: ${{ !contains(github.event.inputs.skip, 'savemedia') }}

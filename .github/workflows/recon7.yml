@@ -1,0 +1,46 @@
+name: 'Recon 7 (noforwards bypass, copy restriction, deleted messages tracking)'
+
+on:
+  workflow_dispatch:
+
+jobs:
+  recon:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Survey code (part 7)
+        run: |
+          set +e
+          J=TMessagesProj/src/main/java/org/telegram
+          CA=$J/ui/ChatActivity.java
+          CO=$J/messenger/ChatObject.java
+          MC=$J/messenger/MessagesController.java
+          MS=$J/messenger/MessagesStorage.java
+          sec() { echo; echo "######## $*"; }
+          around() { L=$(grep -n -E "$2" "$1" | head -1 | cut -d: -f1); if [ -n "$L" ]; then echo "--- $1 @ $L"; sed -n "$((L-$3)),$((L+$4))p" "$1"; else echo "--- NOT FOUND: $2 in $1"; fi; }
+
+          sec "ChatObject: noforwards helpers"
+          grep -n "noForwards\|noforwards\|isNoForwards\|NoForwards" $CO | head -20
+          around $CO "static boolean isNoForwards\(|static boolean hasNoForwards\(" 1 15
+
+          sec "ChatActivity: where forward/copy options get removed because of noforwards"
+          grep -n "noforwards\|noForwards\|canForward\|allowCopy\|noForwardsOrPaidMedia\|OPTION_FORWARD\|OPTION_COPY\b" $CA | head -60
+          around $CA "boolean noforwards" 3 20
+
+          sec "ChatActivity: OPTION_FORWARD / OPTION_COPY definitions"
+          grep -n "public final static int OPTION_FORWARD\|public final static int OPTION_COPY\b" $CA
+
+          sec "ChatActivity: context menu item construction near copy/forward (search for ActionBarMenuItem forward)"
+          grep -n "R.string.Forward)\|R.string.Copy)\|headerAddMenuItems\|createMenu\(" $CA | head -40
+
+          sec "message deletion handling: MessagesController"
+          grep -n "void deleteMessages\|void markDialogMessageAsDeleted\|TL_updateDeleteMessages\|TL_updateDeleteChannelMessages\|processDeletedMessages\|deleteMessagesByPush" $MC | head -30
+          around $MC "void deleteMessages\(" 2 40
+
+          sec "message deletion handling: MessagesStorage"
+          grep -n "markMessagesAsDeletedInternal\|void markMessagesAsDeleted\|deleteDialog\b\|public void deleteMessages\(" $MS | head -30
+          around $MS "void markMessagesAsDeletedInternal\(" 2 50
+
+          sec "local message cache table (for storing message text even if deleted)"
+          grep -n "CREATE TABLE messages_v2\|messages_v2\b" $MS | head -10
