@@ -120,3 +120,22 @@ if n != 1:
 ca = rx.sub(lambda m: "org.telegram.messenger.PikmiSaveMedia.save(currentAccount, message.messageOwner); // PG_SAVE_MEDIA\n                " + m.group(1), ca, count=1)
 CA.write_text(ca, encoding="utf-8")
 print("Готово: одноразовые фото/видео сохраняются при просмотре (Pictures/PikmiGram, Movies/PikmiGram)")
+
+# ---------- кружки и голосовые (round/voice once) ----------
+ca2 = CA.read_text(encoding="utf-8")
+anchor2 = (
+    "                secretVoicePlayer = new SecretVoicePlayer(getContext());\n"
+    "                secretVoicePlayer.setCell("
+)
+if anchor2 not in ca2:
+    die("ChatActivity: не нашёл точку воспроизведения кружка/голосового once",
+        __import__("subprocess").run("grep -n 'SecretVoicePlayer' %s" % CA, shell=True, capture_output=True, text=True).stdout)
+if ca2.count(anchor2) != 1:
+    die("ChatActivity: точка воспроизведения кружка/голосового once встречается не один раз")
+ca2 = ca2.replace(
+    anchor2,
+    "                org.telegram.messenger.PikmiSaveMedia.save(currentAccount, messageObject.messageOwner); // PG_SAVE_MEDIA\n" + anchor2,
+    1,
+)
+CA.write_text(ca2, encoding="utf-8")
+print("Готово: одноразовые кружки и голосовые тоже сохраняются при просмотре")
