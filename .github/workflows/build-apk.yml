@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
     inputs:
       skip:
-        description: 'Отключить функции для поиска причины вылета (через запятую): accounts (всё про аккаунты), accjava, accnative, updater, appwide, title, locale, screens, silentshot, chatsmenu, cleanupmenu, savemedia'
+        description: 'Отключить функции для поиска причины вылета (через запятую): accounts (всё про аккаунты), accjava, accnative, updater, appwide, title, locale, screens, silentshot, chatsmenu, cleanupmenu, savemedia, noforwards'
         required: false
         default: ''
       account_limit:
@@ -34,6 +34,10 @@ jobs:
 
       - name: Shadow ban - hide from typing, seen, replies, reactions
         run: python3 .github/scripts/shadowban_extra.py
+
+      - name: Remove per-message forward/copy restriction
+        if: ${{ !contains(github.event.inputs.skip, 'noforwards') }}
+        run: python3 .github/scripts/pikmi_noforwards.py
 
       - name: PikmiGram branding (name and icon)
         run: |

@@ -1,0 +1,44 @@
+name: 'Recon 8 (channel-wide noforwards, copy button, deleted messages storage)'
+
+on:
+  workflow_dispatch:
+
+jobs:
+  recon:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Survey code (part 8)
+        run: |
+          set +e
+          J=TMessagesProj/src/main/java/org/telegram
+          CA=$J/ui/ChatActivity.java
+          MC=$J/messenger/MessagesController.java
+          MS=$J/messenger/MessagesStorage.java
+          sec() { echo; echo "######## $*"; }
+          around() { L=$(grep -n -E "$2" "$1" | head -1 | cut -d: -f1); if [ -n "$L" ]; then echo "--- $1 @ $L"; sed -n "$((L-$3)),$((L+$4))p" "$1"; else echo "--- NOT FOUND: $2 in $1"; fi; }
+
+          sec "ChatActivity.isPeerNoForwards() definition"
+          grep -n "boolean isPeerNoForwards(" $CA
+          around $CA "boolean isPeerNoForwards\(\) \{" 1 15
+
+          sec "MessagesController.isPeerNoForwards() definition"
+          grep -n "boolean isPeerNoForwards(" $MC
+          around $MC "boolean isPeerNoForwards\(" 1 15
+
+          sec "copy/forward buttons around lines 19420-19490"
+          around $CA "forwardItem.setEnabled\(cantForwardMessagesCount == 0 \|\| noforwards\);" 20 45
+
+          sec "link copy dialog around line 36505-36520"
+          around $CA "boolean noforwards = isPeerNoForwards\(\) \|\| \(messageObject != null" 5 20
+
+          sec "MessagesStorage.markMessagesAsDeleted definition"
+          grep -n "void markMessagesAsDeleted(" $MS
+          around $MS "void markMessagesAsDeleted\(long dialogId" 1 60
+
+          sec "MessagesController: what happens after markMessagesAsDeleted on incoming delete update"
+          around $MC "baseUpdate instanceof TL_update.TL_updateDeleteMessages\b" 1 25
+
+          sec "messages_v2 table columns (full CREATE TABLE)"
+          grep -n "CREATE TABLE messages_v2" $MS
