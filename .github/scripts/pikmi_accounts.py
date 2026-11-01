@@ -1,28 +1,24 @@
 #!/usr/bin/env python3
-"""Снимает ограничение на число аккаунтов (по умолчанию 3, с Premium 5).
+"""Снимает стандартное ограничение на число аккаунтов (3 без Premium).
 
-1) Java: UserConfig.MAX_ACCOUNT_DEFAULT_COUNT и MAX_ACCOUNT_COUNT поднимаются до LIMIT.
-2) Нативный код: ConnectionsManager::getInstance умеет только несколько экземпляров,
-   поэтому переписывается на LIMIT отдельных экземпляров (по одному на аккаунт).
-Идемпотентен. Если нужных мест нет, печатает подсказки и завершается с ошибкой.
+По умолчанию (PG_ACCOUNT_LIMIT пусто) разрешает столько аккаунтов, сколько поддерживает сам код
+(UserConfig.MAX_ACCOUNT_COUNT), и НЕ уменьшает и не увеличивает размеры массивов и число нативных
+экземпляров. Если указано число больше возможностей кода, поднимает константу и переписывает
+ConnectionsManager::getInstance (экспериментально).
+
+Переменные: PG_ACCOUNT_LIMIT (число или пусто), PG_SKIP (accjava, accnative).
+Идемпотентен. Печатает исходные значения в лог.
 """
+import os
 import re
 import subprocess
 import sys
 from pathlib import Path
 
-import os
-
-# До 5 аккаунтов нативный код Telegram уже поддерживает (как у Premium). Больше 5 экспериментально.
-try:
-    LIMIT = int(os.environ.get("PG_ACCOUNT_LIMIT") or 5)
-except ValueError:
-    LIMIT = 5
-LIMIT = max(5, min(32, LIMIT))
-SKIP = os.environ.get("PG_SKIP", "")
-
 UC = Path("TMessagesProj/src/main/java/org/telegram/messenger/UserConfig.java")
 CM = Path("TMessagesProj/jni/tgnet/ConnectionsManager.cpp")
+SKIP = os.environ.get("PG_SKIP", "")
+RAW = (os.environ.get("PG_ACCOUNT_LIMIT") or "").strip()
 
 
 def die(msg, hint=None):
@@ -38,51 +34,75 @@ def grep(pattern, target, n=40):
     return "\n".join(r.stdout.splitlines()[:n])
 
 
-# ---------- Java ----------
+NATIVE_RX = re.compile(r"(ConnectionsManager\s*&\s*ConnectionsManager::getInstance\(\s*((?:u?int32_t|int|unsigned int)\s+(\w+))\s*\)\s*\{)(.*?)\n\}", re.S)
+
+# ---------- справка ----------
+print("=== ИСХОДНЫЕ ЗНАЧЕНИЯ ЛИМИТА АККАУНТОВ ===")
 if not UC.exists():
     die("не найден UserConfig.java")
 uc = UC.read_text(encoding="utf-8")
+print(grep(r"MAX_ACCOUNT|hasPremiumOnAccounts", UC, 12))
+m = re.search(r"public static int getMaxAccountCount\(\)\s*\{.*?\n    \}", uc, re.S)
+print(m.group(0) if m else "getMaxAccountCount: не найден")
+native_capacity = None
+if CM.exists():
+    cm = CM.read_text(encoding="utf-8")
+    nm = NATIVE_RX.search(cm)
+    print("--- native getInstance ---")
+    print(nm.group(0) if nm else "getInstance: не найден")
+    if nm:
+        cases = [int(x) for x in re.findall(r"case\s+(\d+)\s*:", nm.group(4))]
+        native_capacity = (max(cases) + 1) if cases else None
+print("=== КОНЕЦ СПРАВКИ ===")
+
+m_def = re.search(r"MAX_ACCOUNT_DEFAULT_COUNT\s*=\s*(\d+);", uc)
+m_max = re.search(r"\bMAX_ACCOUNT_COUNT\s*=\s*(\d+);", uc)
+if not m_def or not m_max:
+    die("UserConfig: не найдены константы MAX_ACCOUNT_DEFAULT_COUNT / MAX_ACCOUNT_COUNT",
+        grep(r"MAX_ACCOUNT|getMaxAccountCount|hasPremiumOnAccounts", UC))
+orig_def, orig_max = int(m_def.group(1)), int(m_max.group(1))
+
+if RAW.isdigit():
+    want = max(3, min(32, int(RAW)))
+else:
+    want = orig_max          # столько, сколько поддерживает код
+new_max = max(orig_max, want)
+new_def = min(max(orig_def, want), new_max)
+print("Было: DEFAULT=%d, MAX=%d. Станет: DEFAULT=%d, MAX=%d (нативных экземпляров сейчас: %s)" % (
+    orig_def, orig_max, new_def, new_max, native_capacity if native_capacity else "?"))
+
+# ---------- Java ----------
 if "accjava" in SKIP:
     print("Java: пропущено (PG_SKIP)")
 elif "PG_ACCOUNTS" in uc:
     print("Java: уже применено")
 else:
-    rx_def = re.compile(r"(MAX_ACCOUNT_DEFAULT_COUNT\s*=\s*)\d+;")
-    rx_max = re.compile(r"(\bMAX_ACCOUNT_COUNT\s*=\s*)\d+;")
-    if len(rx_def.findall(uc)) != 1 or len(rx_max.findall(uc)) != 1:
-        die("UserConfig: не найдены константы MAX_ACCOUNT_DEFAULT_COUNT / MAX_ACCOUNT_COUNT",
-            grep(r"MAX_ACCOUNT|getMaxAccountCount|hasPremiumOnAccounts", UC))
-    uc = rx_def.sub(lambda m: m.group(1) + "%d; // PG_ACCOUNTS" % LIMIT, uc, count=1)
-    uc = rx_max.sub(lambda m: m.group(1) + "%d; // PG_ACCOUNTS" % LIMIT, uc, count=1)
+    uc = re.sub(r"(MAX_ACCOUNT_DEFAULT_COUNT\s*=\s*)\d+;", lambda x: x.group(1) + "%d; // PG_ACCOUNTS" % new_def, uc, count=1)
+    if new_max != orig_max:
+        uc = re.sub(r"(\bMAX_ACCOUNT_COUNT\s*=\s*)\d+;", lambda x: x.group(1) + "%d; // PG_ACCOUNTS" % new_max, uc, count=1)
     UC.write_text(uc, encoding="utf-8")
-    print("Java: лимит аккаунтов поднят до %d" % LIMIT)
-
-print("--- где ещё упоминается лимит (для справки) ---")
-print(grep(r"getMaxAccountCount|MAX_ACCOUNT_DEFAULT_COUNT|MAX_ACCOUNT_COUNT\s*\)|>= *3\b.*[Aa]ccount", "TMessagesProj/src/main/java", 30))
+    print("Java: готово")
 
 # ---------- native ----------
 if "accnative" in SKIP:
     print("native: пропущено (PG_SKIP)")
     sys.exit(0)
-if LIMIT <= 5:
-    print("native: не нужно (лимит %d поддерживается штатно)" % LIMIT)
-    sys.exit(0)
 if not CM.exists():
-    die("не найден ConnectionsManager.cpp")
+    print("native: ConnectionsManager.cpp не найден, пропуск")
+    sys.exit(0)
 cm = CM.read_text(encoding="utf-8")
 if "PG_ACCOUNTS" in cm:
     print("native: уже применено")
     sys.exit(0)
-
-rx = re.compile(r"(ConnectionsManager\s*&\s*ConnectionsManager::getInstance\(\s*((?:u?int32_t|int|unsigned int)\s+(\w+))\s*\)\s*\{)(.*?)\n\}", re.S)
-m = rx.search(cm)
+if native_capacity is not None and new_max <= native_capacity:
+    print("native: менять не нужно (экземпляров %d, нужно %d)" % (native_capacity, new_max))
+    sys.exit(0)
+m = NATIVE_RX.search(cm)
 if not m or "static ConnectionsManager" not in m.group(4):
     die("native: не нашёл ConnectionsManager::getInstance в ожидаемом виде",
         grep(r"ConnectionsManager::getInstance|getInstance\(", CM, 20))
 param = m.group(3)
-cases = []
-for i in range(LIMIT):
-    cases.append("        case %d:\n            static ConnectionsManager instance%d(%d);\n            return instance%d;" % (i, i, i, i))
+cases = ["        case %d:\n            static ConnectionsManager instance%d(%d);\n            return instance%d;" % (i, i, i, i) for i in range(new_max)]
 new_func = m.group(1) + """ // PG_ACCOUNTS
     switch (%s) {
 %s
@@ -90,7 +110,7 @@ new_func = m.group(1) + """ // PG_ACCOUNTS
             static ConnectionsManager instanceDefault(%d);
             return instanceDefault;
     }
-}""" % (param, "\n".join(cases), LIMIT - 1)
+}""" % (param, "\n".join(cases), new_max - 1)
 cm = cm[:m.start()] + new_func + cm[m.end():]
 CM.write_text(cm, encoding="utf-8")
-print("native: ConnectionsManager::getInstance теперь на %d экземпляров" % LIMIT)
+print("native: ConnectionsManager::getInstance теперь на %d экземпляров" % new_max)

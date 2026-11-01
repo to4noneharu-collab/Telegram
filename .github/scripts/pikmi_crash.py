@@ -72,6 +72,48 @@ public class PikmiCrash {
             } catch (Throwable ignore) {
             }
         }
+        try {
+            dumpLogcat(ctx);
+        } catch (Throwable ignore) {
+        }
+    }
+
+    /** Достаёт из системного журнала (только этого приложения) последний вылет: Java FATAL EXCEPTION или native "Fatal signal". */
+    private static void dumpLogcat(Context ctx) throws Exception {
+        Process p = Runtime.getRuntime().exec(new String[]{"logcat", "-d", "-v", "threadtime", "-t", "4000", "*:W"});
+        java.io.BufferedReader r = new java.io.BufferedReader(new java.io.InputStreamReader(p.getInputStream(), "UTF-8"));
+        java.util.ArrayList<String> lines = new java.util.ArrayList<String>();
+        String l;
+        while ((l = r.readLine()) != null) {
+            lines.add(l);
+        }
+        r.close();
+        int hit = -1;
+        for (int i = lines.size() - 1; i >= 0; i--) {
+            String s = lines.get(i);
+            if (s.contains("FATAL EXCEPTION") || s.contains("Fatal signal") || s.contains("SIGSEGV") || s.contains("SIGABRT")) {
+                hit = i;
+                break;
+            }
+        }
+        if (hit < 0) {
+            return;
+        }
+        int from = Math.max(0, hit - 15);
+        int to = Math.min(lines.size(), hit + 80);
+        StringBuilder sb = new StringBuilder();
+        sb.append("PikmiGram: фрагмент системного журнала около последнего вылета\n").append(device()).append("\n\n");
+        for (int i = from; i < to; i++) {
+            sb.append(lines.get(i)).append('\n');
+        }
+        String text = sb.toString();
+        SharedPreferences prefs = ctx.getSharedPreferences("pikmigram_crash", Context.MODE_PRIVATE);
+        String sig = lines.get(hit);
+        if (sig.equals(prefs.getString("last_logcat_hit", ""))) {
+            return;
+        }
+        prefs.edit().putString("last_logcat_hit", sig).apply();
+        save(ctx, "PikmiGram-logcat-" + System.currentTimeMillis() + ".txt", text.getBytes("UTF-8"));
     }
 
     private static String device() {
