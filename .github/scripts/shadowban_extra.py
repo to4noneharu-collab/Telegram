@@ -134,12 +134,12 @@ method = '''public MessageObject replyMessageObject;
         return false;
     }
 
-    public void shadowSanitizeReactions() {
-        if (messageOwner == null || messageOwner.reactions == null || org.telegram.messenger.ShadowBan.count() == 0) {
+    public static void shadowSanitizeReactions(TLRPC.MessageReactions reactions, long dialogId) {
+        if (reactions == null || org.telegram.messenger.ShadowBan.count() == 0) {
             return;
         }
-        java.util.List<TLRPC.MessagePeerReaction> recent = messageOwner.reactions.recent_reactions;
-        java.util.List<TLRPC.ReactionCount> results = messageOwner.reactions.results;
+        java.util.List<TLRPC.MessagePeerReaction> recent = reactions.recent_reactions;
+        java.util.List<TLRPC.ReactionCount> results = reactions.results;
         if (recent != null && results != null) {
             for (int i = recent.size() - 1; i >= 0; i--) {
                 TLRPC.MessagePeerReaction pr = recent.get(i);
@@ -159,8 +159,7 @@ method = '''public MessageObject replyMessageObject;
                 }
             }
         }
-        long did = messageOwner.dialog_id != 0 ? messageOwner.dialog_id : getDialogId();
-        if (results != null && did > 0 && org.telegram.messenger.ShadowBan.isBanned(did)) {
+        if (results != null && dialogId > 0 && org.telegram.messenger.ShadowBan.isBanned(dialogId)) {
             // личный чат с забаненным: убираем его реакции, оставляем только наши
             for (int i = results.size() - 1; i >= 0; i--) {
                 TLRPC.ReactionCount rc = results.get(i);
@@ -171,6 +170,14 @@ method = '''public MessageObject replyMessageObject;
                 }
             }
         }
+    }
+
+    public void shadowSanitizeReactions() {
+        if (messageOwner == null) {
+            return;
+        }
+        long did = messageOwner.dialog_id != 0 ? messageOwner.dialog_id : getDialogId();
+        shadowSanitizeReactions(messageOwner.reactions, did);
     }'''
 mo = sub(mo, r"public MessageObject replyMessageObject;", lambda m: method, "метод shadowSanitizeReactions")
 mo = sub(
@@ -180,5 +187,13 @@ mo = sub(
     "вызов в конструкторе",
     expect=None,
 )
+# живые обновления реакций: чистим входящие данные в MessageObject.updateReactions
+rx = re.compile(r"(static void updateReactions\(TLRPC\.Message (\w+), TLRPC\.(?:TL_)?[Mm]essageReactions (\w+)\) \{)")
+if len(rx.findall(mo)) == 1:
+    mo = rx.sub(lambda m: m.group(1) + "\n        shadowSanitizeReactions(%s, %s.dialog_id);" % (m.group(3), m.group(2)), mo, count=1)
+    print("  ok: живые обновления реакций")
+else:
+    print("  пропуск: updateReactions не найден (реакции в открытом чате спрячутся после перезахода)")
+    print(__import__("subprocess").run("grep -n 'updateReactions' %s | head" % MO, shell=True, capture_output=True, text=True).stdout)
 MO.write_text(mo, encoding="utf-8")
 print("Готово: скрытие забаненных применено")
