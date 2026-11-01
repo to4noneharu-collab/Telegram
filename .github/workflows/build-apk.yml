@@ -10,9 +10,9 @@ on:
         required: false
         default: ''
       account_limit:
-        description: 'Максимум аккаунтов: 5 безопасно, больше 5 экспериментально (до 32)'
+        description: 'Максимум аккаунтов. Пусто = столько, сколько штатно поддерживает код (безопасно). Число больше этого экспериментально (до 32)'
         required: false
-        default: '5'
+        default: ''
 
 permissions:
   contents: write
