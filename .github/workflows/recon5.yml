@@ -1,0 +1,54 @@
+name: Recon 5 (chats menu, one-time media, reactions update)
+
+on:
+  workflow_dispatch:
+
+jobs:
+  recon:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Survey code (part 5)
+        run: |
+          set +e
+          J=TMessagesProj/src/main/java/org/telegram
+          MO=$J/messenger/MessageObject.java
+          CA=$J/ui/ChatActivity.java
+          DA=$J/ui/DialogsActivity.java
+          FL=$J/messenger/FileLoader.java
+          sec() { echo; echo "######## $*"; }
+          around() { L=$(grep -n -E "$2" "$1" | head -1 | cut -d: -f1); if [ -n "$L" ]; then echo "--- $1 @ $L"; sed -n "$((L-$3)),$((L+$4))p" "$1"; else echo "--- NOT FOUND: $2 in $1"; fi; }
+
+          sec "chats menu: where the three-dots menu is built"
+          grep -rn "R.string.NewGroup" TMessagesProj/src/main/java --include=*.java | head -10
+          grep -n "addSubItem(\|addSubItem\b" $DA | head -60
+          grep -n "otherItem\|dialogsItem\|nightModeItem\|switchTheme\|SwitchToNightTheme\|SwitchToDayTheme" $DA | head -40
+          sec "chats menu: items and click handler"
+          around $DA "R.string.NewGroup" 25 30
+          around $DA "public void onItemClick\(int id\)" 3 60
+          sec "main tabs"
+          ls $J/ui | grep -i "MainTabs\|Tabs" | head
+          grep -n "NewGroup\|SavedMessages\|SwitchToNight\|addSubItem" $J/ui/MainTabsActivity.java | head -20
+
+          sec "MessageObject.updateReactions"
+          grep -n "static void updateReactions\|public static void updateReactions" $MO
+          around $MO "static void updateReactions\(" 1 30
+
+          sec "MessageObject: one-time and self-destruct helpers"
+          grep -n "boolean isSecretMedia\|boolean isRoundOnce\|boolean isVoiceOnce\|boolean isOnce\|boolean isSecretPhoto\|ttl_seconds" $MO | head -40
+          around $MO "public boolean isSecretMedia\(" 1 22
+          around $MO "public boolean isRoundOnce\(|public boolean isVoiceOnce\(|public boolean isOnce\(" 1 12
+
+          sec "who uses them (all files)"
+          grep -rn "isSecretMedia()\|isRoundOnce()\|isVoiceOnce()\|isOnce()" TMessagesProj/src/main/java --include=*.java | grep -v "MessageObject.java" | head -60
+
+          sec "ChatActivity: open secret/one-time media"
+          grep -n "SecretMediaViewer\|openSecretPhoto\|isSecretMedia()\|isRoundOnce()\|isVoiceOnce()" $CA | head -40
+          around $CA "SecretMediaViewer.getInstance\(\).openMedia|openSecretPhotoRunnable" 12 22
+          ls $J/ui | grep -i "SecretMedia\|PhotoViewer" | head
+
+          sec "FileLoader API"
+          grep -n "public File getPathToMessage\|public File getPathToAttach\|public static File getPathToAttach\|public static File getInstanceFilePath\|loadFileInternal(\|public void loadFile(\|public static File getPathToMessage" $FL | head -20
+          around $FL "NotificationCenter.fileLoaded," 6 6
+          grep -n "fileLoaded" $J/messenger/NotificationCenter.java | head -5
