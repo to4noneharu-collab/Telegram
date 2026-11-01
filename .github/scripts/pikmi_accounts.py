@@ -53,6 +53,10 @@ if CM.exists():
     if nm:
         cases = [int(x) for x in re.findall(r"case\s+(\d+)\s*:", nm.group(4))]
         native_capacity = (max(cases) + 1) if cases else None
+print("--- где в коде могут быть зашиты размеры по числу аккаунтов (Java) ---")
+print(subprocess.run("grep -rnE 'new [A-Za-z<>]+\\[ *(4|5) *\\]|ACCOUNT.*(\\b4\\b|\\b5\\b)|(\\b4\\b|\\b5\\b).*(accounts|ACCOUNT)' --include=*.java TMessagesProj/src/main/java | grep -vE '^.*(//|\\*)' | head -40", shell=True, capture_output=True, text=True).stdout)
+print("--- нативный код: массивы и индексы по instanceNum ---")
+print(subprocess.run("grep -rnE 'instanceNum *\\]|\\[ *instanceNum|MAX_ACCOUNT|\\[(4|5)\\];|instances?\\[' TMessagesProj/jni --include=*.cpp --include=*.h | head -40", shell=True, capture_output=True, text=True).stdout)
 print("=== КОНЕЦ СПРАВКИ ===")
 
 m_def = re.search(r"MAX_ACCOUNT_DEFAULT_COUNT\s*=\s*(\d+);", uc)
@@ -65,7 +69,7 @@ orig_def, orig_max = int(m_def.group(1)), int(m_max.group(1))
 if RAW.isdigit():
     want = max(3, min(32, int(RAW)))
 else:
-    want = orig_max          # столько, сколько поддерживает код
+    want = max(orig_max, native_capacity or orig_max)   # столько, сколько поддерживает код
 new_max = max(orig_max, want)
 new_def = min(max(orig_def, want), new_max)
 print("Было: DEFAULT=%d, MAX=%d. Станет: DEFAULT=%d, MAX=%d (нативных экземпляров сейчас: %s)" % (
@@ -80,8 +84,13 @@ else:
     uc = re.sub(r"(MAX_ACCOUNT_DEFAULT_COUNT\s*=\s*)\d+;", lambda x: x.group(1) + "%d; // PG_ACCOUNTS" % new_def, uc, count=1)
     if new_max != orig_max:
         uc = re.sub(r"(\bMAX_ACCOUNT_COUNT\s*=\s*)\d+;", lambda x: x.group(1) + "%d; // PG_ACCOUNTS" % new_max, uc, count=1)
+    # getMaxAccountCount() возвращает зашитые числа (5 с Premium, 3 без), именно они и задают лимит
+    rx_get = re.compile(r"(public static int getMaxAccountCount\(\)\s*\{)\s*return [^;]*;(\s*\})", re.S)
+    if len(rx_get.findall(uc)) != 1:
+        die("UserConfig: не нашёл getMaxAccountCount() в ожидаемом виде", grep(r"getMaxAccountCount", UC))
+    uc = rx_get.sub(lambda x: x.group(1) + "\n        return MAX_ACCOUNT_COUNT; // PG_ACCOUNTS" + x.group(2), uc, count=1)
     UC.write_text(uc, encoding="utf-8")
-    print("Java: готово")
+    print("Java: готово (getMaxAccountCount теперь возвращает %d)" % new_max)
 
 # ---------- native ----------
 if "accnative" in SKIP:
