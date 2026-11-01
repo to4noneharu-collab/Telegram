@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
     inputs:
       skip:
-        description: 'Отключить функции для поиска причины вылета (через запятую): accounts (всё про аккаунты), accjava, accnative, updater, appwide, title, locale, screens, silentshot'
+        description: 'Отключить функции для поиска причины вылета (через запятую): accounts (всё про аккаунты), accjava, accnative, updater, appwide, title, locale, screens, silentshot, chatsmenu, savemedia'
         required: false
         default: ''
       account_limit:
@@ -88,6 +88,14 @@ jobs:
       - name: Built-in updater (GitHub Releases)
         if: ${{ !contains(github.event.inputs.skip, 'updater') }}
         run: python3 .github/scripts/pikmi_updater.py
+
+      - name: PikmiGram chats menu (fonts, shadow ban list, updates)
+        if: ${{ !contains(github.event.inputs.skip, 'chatsmenu') }}
+        run: python3 .github/scripts/pikmi_menu.py
+
+      - name: Save one-time photos and videos
+        if: ${{ !contains(github.event.inputs.skip, 'savemedia') }}
+        run: python3 .github/scripts/pikmi_savemedia.py
 
       - uses: actions/setup-java@v4
         with:
