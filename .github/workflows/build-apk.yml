@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
     inputs:
       skip:
-        description: 'Отключить функции для поиска причины вылета (через запятую): accounts (всё про аккаунты), accjava, accnative, updater, appwide, title, locale'
+        description: 'Отключить функции для поиска причины вылета (через запятую): accounts (всё про аккаунты), accjava, accnative, updater, appwide, title, locale, screens, silentshot'
         required: false
         default: ''
       account_limit:
@@ -76,6 +76,10 @@ jobs:
 
       - name: Crash log (saves Java crash trace to Downloads)
         run: python3 .github/scripts/pikmi_crash.py
+
+      - name: Allow screenshots everywhere
+        if: ${{ !contains(github.event.inputs.skip, 'screens') }}
+        run: python3 .github/scripts/pikmi_screens.py
 
       - name: Remove account limit
         if: ${{ !contains(github.event.inputs.skip, 'accounts') }}

@@ -51,6 +51,8 @@ jobs:
       run: python3 .github/scripts/pikmi_fonts.py
     - name: Crash log (saves Java crash trace to Downloads)
       run: python3 .github/scripts/pikmi_crash.py
+    - name: Allow screenshots everywhere
+      run: python3 .github/scripts/pikmi_screens.py
     - name: Remove account limit
       run: python3 .github/scripts/pikmi_accounts.py
     - name: Built-in updater (GitHub Releases)
