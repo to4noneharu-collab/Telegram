@@ -280,6 +280,7 @@ public class PikmiFonts {
             case "kurale": return "Kurale · элегантный";
             case "ruslandisplay": return "Ruslan Display · декоративный";
             case "underdog": return "Underdog · милый мультяшный";
+            case "inter": return "Inter · как системный шрифт iPhone";
             default:
                 return b.length() == 0 ? file : Character.toUpperCase(b.charAt(0)) + b.substring(1);
         }

@@ -44,6 +44,9 @@ insert = '''
         io.add(R.drawable.msg_block, "Список теневого бана", () -> {
             org.telegram.messenger.ShadowBan.showList(DialogsActivity.this);
         });
+        io.add(R.drawable.msg_edit, "PikmiGram: эквалайзер", () -> {
+            org.telegram.messenger.PikmiEqualizer.showDialog(getParentActivity());
+        });
         io.add(R.drawable.msg_edit, "PikmiGram: обновления", () -> {
             org.telegram.messenger.PikmiUpdater.check(getParentActivity(), true);
         });'''
