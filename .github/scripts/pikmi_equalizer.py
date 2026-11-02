@@ -113,6 +113,38 @@ public class PikmiEqualizer {
         applyAll();
     }
 
+    /**
+     * Подключает эффекты к музыкальному плееру Telegram. Идентификатор аудиосессии берётся у ExoPlayer
+     * через рефлексию (чтобы не зависеть от пакета библиотеки), с несколькими повторами.
+     */
+    public static void attachToPlayer(final org.telegram.ui.Components.VideoPlayer vp, final MessageObject message) {
+        if (vp == null || message == null || !message.isMusic()) {
+            return;
+        }
+        final int[] tries = {0};
+        final Runnable[] holder = new Runnable[1];
+        holder[0] = new Runnable() {
+            @Override
+            public void run() {
+                try {
+                    Object p = vp.player;
+                    if (p != null) {
+                        Object id = p.getClass().getMethod("getAudioSessionId").invoke(p);
+                        if (id instanceof Integer && ((Integer) id) > 0) {
+                            attach((Integer) id);
+                            return;
+                        }
+                    }
+                } catch (Throwable ignore) {
+                }
+                if (++tries[0] < 8) {
+                    AndroidUtilities.runOnUIThread(holder[0], 250);
+                }
+            }
+        };
+        AndroidUtilities.runOnUIThread(holder[0], 100);
+    }
+
     public static synchronized void release() {
         try {
             if (eq != null) {
