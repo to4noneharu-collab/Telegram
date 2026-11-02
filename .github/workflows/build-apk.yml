@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
     inputs:
       skip:
-        description: 'Отключить функции для поиска причины вылета (через запятую): accounts (всё про аккаунты), accjava, accnative, updater, appwide, title, locale, screens, silentshot, chatsmenu, cleanupmenu, savemedia, noforwards, noforwardschan'
+        description: 'Отключить функции для поиска причины вылета (через запятую): accounts (всё про аккаунты), accjava, accnative, updater, appwide, title, locale, screens, silentshot, chatsmenu, cleanupmenu, savemedia, noforwards, noforwardschan, equalizer'
         required: false
         default: ''
       account_limit:
@@ -75,6 +75,7 @@ jobs:
           get kurale kurale/Kurale-Regular.ttf
           get ruslandisplay ruslandisplay/RuslanDisplay.ttf
           get underdog underdog/Underdog-Regular.ttf
+          get inter "inter/Inter%5Bopsz,wght%5D.ttf"
           COUNT=$(ls "$D"/pg_*.ttf 2>/dev/null | wc -l)
           echo "Скачано шрифтов: $COUNT"
           test "$COUNT" -ge 3 || { echo "Слишком мало шрифтов скачалось"; exit 1; }
@@ -96,6 +97,10 @@ jobs:
       - name: Built-in updater (GitHub Releases)
         if: ${{ !contains(github.event.inputs.skip, 'updater') }}
         run: python3 .github/scripts/pikmi_updater.py
+
+      - name: Equalizer (audio effects and settings window)
+        if: ${{ !contains(github.event.inputs.skip, 'equalizer') }}
+        run: python3 .github/scripts/pikmi_equalizer.py
 
       - name: PikmiGram chats menu (fonts, shadow ban list, updates)
         if: ${{ !contains(github.event.inputs.skip, 'chatsmenu') }}

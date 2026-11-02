@@ -1,0 +1,35 @@
+name: 'Recon 9 (music player: audio session for equalizer)'
+
+on:
+  workflow_dispatch:
+
+jobs:
+  recon:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Survey code (part 9)
+        run: |
+          set +e
+          J=TMessagesProj/src/main/java/org/telegram
+          MC=$J/messenger/MediaController.java
+          VP=$J/ui/Components/VideoPlayer.java
+          sec() { echo; echo "######## $*"; }
+          around() { L=$(grep -n -E "$2" "$1" | head -1 | cut -d: -f1); if [ -n "$L" ]; then echo "--- $1 @ $L"; sed -n "$((L-$3)),$((L+$4))p" "$1"; else echo "--- NOT FOUND: $2 in $1"; fi; }
+
+          sec "MediaController: audio player fields and creation"
+          grep -n "audioPlayer\b" $MC | head -40
+          grep -n "new VideoPlayer\|AudioSessionId\|audioSession" $MC | head -20
+          around $MC "audioPlayer = new VideoPlayer" 4 40
+
+          sec "VideoPlayer: ExoPlayer instance and listeners"
+          grep -n "ExoPlayer player\|player = \|AudioSessionId\|onAudioSessionId\|public void preparePlayer\|public ExoPlayer getPlayer\|public void setPlayWhenReady\|public int getAudioSessionId" $VP | head -30
+          around $VP "public ExoPlayer getPlayer|public int getAudioSessionId" 2 12
+
+          sec "ExoPlayer sources: getAudioSessionId"
+          grep -rn "getAudioSessionId" TMessagesProj/src/main/java --include=*.java | head -15
+
+          sec "music UI: where a button could be added (AudioPlayerAlert)"
+          ls $J/ui/Components | grep -i "AudioPlayer\|MusicPlayer" | head
+          grep -n "optionsButton\|showSubItem\|addSubItem\|ActionBarMenuItem" $J/ui/Components/AudioPlayerAlert.java | head -30
