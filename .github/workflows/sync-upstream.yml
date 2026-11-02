@@ -58,7 +58,7 @@ jobs:
         if: steps.up.outputs.uptodate == 'false'
         run: |
           pip install pillow
-          for s in shadowban_list shadowban_extra pikmigram_brand pikmi_fonts pikmi_crash pikmi_screens pikmi_accounts pikmi_updater pikmi_equalizer pikmi_menu pikmi_cleanup_menu pikmi_savemedia pikmi_noforwards pikmi_noforwards_channel; do
+          for s in shadowban_list shadowban_extra pikmigram_brand pikmi_fonts pikmi_crash pikmi_screens pikmi_accounts pikmi_updater pikmi_equalizer pikmi_equalizer_hook pikmi_menu pikmi_cleanup_menu pikmi_savemedia pikmi_noforwards pikmi_noforwards_channel; do
             echo "=== $s"
             python3 ".github/scripts/$s.py" || { echo "Патч $s не применился к новой версии"; exit 1; }
           done

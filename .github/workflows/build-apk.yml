@@ -102,6 +102,10 @@ jobs:
         if: ${{ !contains(github.event.inputs.skip, 'equalizer') }}
         run: python3 .github/scripts/pikmi_equalizer.py
 
+      - name: Equalizer hook (connect to music player)
+        if: ${{ !contains(github.event.inputs.skip, 'equalizer') }}
+        run: python3 .github/scripts/pikmi_equalizer_hook.py
+
       - name: PikmiGram chats menu (fonts, shadow ban list, updates)
         if: ${{ !contains(github.event.inputs.skip, 'chatsmenu') }}
         run: python3 .github/scripts/pikmi_menu.py
