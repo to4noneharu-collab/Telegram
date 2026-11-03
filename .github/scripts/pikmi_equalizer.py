@@ -250,12 +250,28 @@ public class PikmiEqualizer {
         return (db > 0 ? "+" : "") + String.format("%.1f", db) + " дБ";
     }
 
-    public static void showDialog(final Activity activity) {
-        if (activity == null) {
-            return;
+    private static TextView label(Context c, String text, int color, int sp) {
+        TextView t = new TextView(c);
+        t.setText(text);
+        t.setTextSize(sp);
+        if (color != 0) {
+            t.setTextColor(color);
         }
+        return t;
+    }
+
+    /** Строка состояния: помогает понять, подключены ли эффекты к плееру. */
+    public static synchronized String status() {
+        return "Сессия плеера: " + (sessionId > 0 ? String.valueOf(sessionId) : "нет (запусти трек)")
+                + "\nЭквалайзер: " + (eq != null ? "подключён" : "недоступен")
+                + ", басы: " + (bass != null ? "да" : "нет")
+                + ", объём: " + (virt != null ? "да" : "нет")
+                + ", громкость: " + (loud != null ? "да" : "нет");
+    }
+
+    /** Содержимое эквалайзера для страницы и окна. Цвета 0 = по умолчанию. */
+    public static View buildContent(final Context ctx, int textColor, int hintColor, int accentColor) {
         final SharedPreferences p = prefs();
-        // Для окна нужны параметры полос: берём у живого эффекта или создаём временный на «нулевой» сессии
         Equalizer probe = eq;
         boolean tmp = false;
         if (probe == null) {
@@ -271,11 +287,7 @@ public class PikmiEqualizer {
         final int maxLvl = probe != null ? probe.getBandLevelRange()[1] : 1500;
         final int[] centers = new int[bands];
         for (int i = 0; i < bands; i++) {
-            if (probe != null) {
-                centers[i] = probe.getCenterFreq((short) i);
-            } else {
-                centers[i] = (int) (60000 * Math.pow(4, i));
-            }
+            centers[i] = probe != null ? probe.getCenterFreq((short) i) : (int) (60000 * Math.pow(4, i));
         }
         if (tmp) {
             try {
@@ -283,48 +295,52 @@ public class PikmiEqualizer {
             } catch (Throwable ignore) {
             }
         }
+        final int fText = textColor;
+        final int fHint = hintColor;
+        final int fAccent = accentColor;
 
-        final LinearLayout root = new LinearLayout(activity);
+        final LinearLayout root = new LinearLayout(ctx);
         root.setOrientation(LinearLayout.VERTICAL);
-        root.setPadding(dp(activity, 20), dp(activity, 8), dp(activity, 20), dp(activity, 8));
+        root.setPadding(dp(ctx, 16), dp(ctx, 8), dp(ctx, 16), dp(ctx, 8));
 
-        final Switch sw = new Switch(activity);
+        final Switch sw = new Switch(ctx);
         sw.setText("Эквалайзер включён");
-        sw.setChecked(isEnabled());
         sw.setTextSize(16);
+        if (fText != 0) {
+            sw.setTextColor(fText);
+        }
+        sw.setChecked(isEnabled());
+        sw.setOnCheckedChangeListener(new android.widget.CompoundButton.OnCheckedChangeListener() {
+            @Override
+            public void onCheckedChanged(android.widget.CompoundButton b, boolean checked) {
+                p.edit().putBoolean("enabled", checked).apply();
+                applyAll();
+            }
+        });
         root.addView(sw);
 
-        TextView presetLabel = new TextView(activity);
-        presetLabel.setText("Пресет");
-        presetLabel.setPadding(0, dp(activity, 12), 0, 0);
-        root.addView(presetLabel);
-
-        final Spinner spinner = new Spinner(activity);
-        ArrayAdapter<String> sa = new ArrayAdapter<String>(activity, android.R.layout.simple_spinner_dropdown_item, PRESET_NAMES);
-        spinner.setAdapter(sa);
-        spinner.setSelection(Math.max(0, Math.min(PRESET_NAMES.length - 1, p.getInt("preset", 0))));
-        root.addView(spinner);
+        final TextView presetBtn = label(ctx, "", fAccent, 16);
+        presetBtn.setPadding(0, dp(ctx, 14), 0, dp(ctx, 10));
+        root.addView(presetBtn);
 
         final SeekBar[] bandBars = new SeekBar[bands];
         final TextView[] bandVals = new TextView[bands];
         for (int i = 0; i < bands; i++) {
             final int idx = i;
-            LinearLayout row = new LinearLayout(activity);
+            LinearLayout row = new LinearLayout(ctx);
             row.setOrientation(LinearLayout.HORIZONTAL);
             row.setGravity(Gravity.CENTER_VERTICAL);
-            row.setPadding(0, dp(activity, 6), 0, 0);
-            TextView name = new TextView(activity);
-            name.setText(freqLabel(centers[i]));
-            name.setWidth(dp(activity, 70));
+            row.setPadding(0, dp(ctx, 4), 0, 0);
+            TextView name = label(ctx, freqLabel(centers[i]), fText, 14);
+            name.setWidth(dp(ctx, 72));
             row.addView(name);
-            SeekBar bar = new SeekBar(activity);
+            SeekBar bar = new SeekBar(ctx);
             bar.setMax(maxLvl - minLvl);
             bar.setProgress(p.getInt("band" + i, 0) - minLvl);
             row.addView(bar, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
-            TextView val = new TextView(activity);
-            val.setWidth(dp(activity, 70));
+            TextView val = label(ctx, dbLabel(p.getInt("band" + i, 0)), fHint, 13);
+            val.setWidth(dp(ctx, 72));
             val.setGravity(Gravity.END);
-            val.setText(dbLabel(p.getInt("band" + i, 0)));
             row.addView(val);
             bandBars[i] = bar;
             bandVals[i] = val;
@@ -350,77 +366,81 @@ public class PikmiEqualizer {
             root.addView(row);
         }
 
-        final boolean[] presetInit = {true};
-        spinner.setOnItemSelectedListener(new AdapterView.OnItemSelectedListener() {
+        presetBtn.setText("Пресет: " + PRESET_NAMES[Math.max(0, Math.min(PRESET_NAMES.length - 1, p.getInt("preset", 0)))] + "  ▾");
+        presetBtn.setOnClickListener(new View.OnClickListener() {
             @Override
-            public void onItemSelected(AdapterView<?> parent, View view, int position, long id) {
-                if (presetInit[0]) {
-                    presetInit[0] = false;
-                    return;
-                }
+            public void onClick(View v) {
+                new android.app.AlertDialog.Builder(ctx)
+                        .setTitle("Пресет")
+                        .setItems(PRESET_NAMES, new DialogInterface.OnClickListener() {
+                            @Override
+                            public void onClick(DialogInterface dialog, int position) {
+                                SharedPreferences.Editor ed = p.edit();
+                                ed.putInt("preset", position);
+                                for (int i = 0; i < bands; i++) {
+                                    int level = presetLevel(position, i, bands, minLvl, maxLvl);
+                                    ed.putInt("band" + i, level);
+                                    bandBars[i].setProgress(level - minLvl);
+                                    bandVals[i].setText(dbLabel(level));
+                                }
+                                ed.apply();
+                                presetBtn.setText("Пресет: " + PRESET_NAMES[position] + "  ▾");
+                                applyAll();
+                            }
+                        })
+                        .show();
+            }
+        });
+
+        final SeekBar bassBar = addExtra(ctx, root, p, "bass", "Усиление басов", 1000, fText);
+        final SeekBar virtBar = addExtra(ctx, root, p, "virt", "Объёмный звук", 1000, fText);
+        final SeekBar loudBar = addExtra(ctx, root, p, "loud", "Усиление громкости", 1500, fText);
+
+        TextView reset = label(ctx, "Сбросить настройки", fAccent, 16);
+        reset.setPadding(0, dp(ctx, 18), 0, dp(ctx, 6));
+        reset.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
                 SharedPreferences.Editor ed = p.edit();
-                ed.putInt("preset", position);
+                ed.putInt("preset", 0).putInt("bass", 0).putInt("virt", 0).putInt("loud", 0);
                 for (int i = 0; i < bands; i++) {
-                    int level = presetLevel(position, i, bands, minLvl, maxLvl);
-                    ed.putInt("band" + i, level);
-                    bandBars[i].setProgress(level - minLvl);
-                    bandVals[i].setText(dbLabel(level));
+                    ed.putInt("band" + i, 0);
+                    bandBars[i].setProgress(0 - minLvl);
+                    bandVals[i].setText(dbLabel(0));
                 }
                 ed.apply();
+                bassBar.setProgress(0);
+                virtBar.setProgress(0);
+                loudBar.setProgress(0);
+                presetBtn.setText("Пресет: " + PRESET_NAMES[0] + "  ▾");
                 applyAll();
-            }
-
-            @Override
-            public void onNothingSelected(AdapterView<?> parent) {
+                Toast.makeText(ctx, "Настройки эквалайзера сброшены", Toast.LENGTH_SHORT).show();
             }
         });
+        root.addView(reset);
 
-        // дополнительные регуляторы: баса, объём, громкость
-        addExtra(activity, root, p, "bass", "Усиление басов", 1000, 1000);
-        addExtra(activity, root, p, "virt", "Объёмный звук", 1000, 1000);
-        addExtra(activity, root, p, "loud", "Усиление громкости", 1500, 1500);
-
-        sw.setOnCheckedChangeListener(new android.widget.CompoundButton.OnCheckedChangeListener() {
-            @Override
-            public void onCheckedChanged(android.widget.CompoundButton b, boolean checked) {
-                p.edit().putBoolean("enabled", checked).apply();
-                applyAll();
-            }
-        });
-
-        TextView hint = new TextView(activity);
-        hint.setText("Эффекты применяются к музыке, которая играет в приложении. Если звук не меняется, перезапусти трек.");
-        hint.setTextSize(12);
-        hint.setPadding(0, dp(activity, 12), 0, 0);
+        TextView hint = label(ctx, "Эффекты применяются к музыке, которая играет в приложении. Если звук не меняется, перезапусти трек.", fHint, 12);
+        hint.setPadding(0, dp(ctx, 8), 0, 0);
         root.addView(hint);
+        return root;
+    }
 
-        ScrollView scroll = new ScrollView(activity);
-        scroll.addView(root);
-
+    public static void showDialog(final Activity activity) {
+        if (activity == null) {
+            return;
+        }
+        ScrollView sv = new ScrollView(activity);
+        sv.addView(buildContent(activity, 0, 0, 0));
         new android.app.AlertDialog.Builder(activity)
                 .setTitle("Эквалайзер PikmiGram")
-                .setView(scroll)
-                .setNeutralButton("Сбросить", new DialogInterface.OnClickListener() {
-                    @Override
-                    public void onClick(DialogInterface dialog, int which) {
-                        SharedPreferences.Editor ed = p.edit();
-                        ed.putInt("preset", 0).putInt("bass", 0).putInt("virt", 0).putInt("loud", 0);
-                        for (int i = 0; i < bands; i++) {
-                            ed.putInt("band" + i, 0);
-                        }
-                        ed.apply();
-                        applyAll();
-                        Toast.makeText(activity, "Настройки эквалайзера сброшены", Toast.LENGTH_SHORT).show();
-                    }
-                })
+                .setView(sv)
                 .setPositiveButton("Готово", null)
                 .show();
     }
 
-    private static void addExtra(Context ctx, LinearLayout root, final SharedPreferences p, final String key, String title, int max, final int scale) {
-        TextView t = new TextView(ctx);
-        t.setText(title);
-        t.setPadding(0, dp(ctx, 12), 0, 0);
+    private static SeekBar addExtra(Context ctx, LinearLayout root, final SharedPreferences p, final String key, String title, int max, int textColor) {
+        TextView t = label(ctx, title, textColor, 14);
+        t.setPadding(0, dp(ctx, 14), 0, 0);
         root.addView(t);
         SeekBar bar = new SeekBar(ctx);
         bar.setMax(max);
@@ -443,6 +463,7 @@ public class PikmiEqualizer {
             }
         });
         root.addView(bar);
+        return bar;
     }
 }
 '''

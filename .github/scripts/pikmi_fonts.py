@@ -240,6 +240,44 @@ public class PikmiFonts {
         }
     }
 
+    /** Выбор шрифта из интерфейса: сохранить и сразу применить, где возможно. */
+    public static void select(String f) {
+        setFont(f);
+        appWideDone = false;
+        applyAppWide();
+    }
+
+    public static String nameOf(String file) {
+        if (file == null || file.length() == 0) {
+            return "Стандартный шрифт";
+        }
+        return displayName(file);
+    }
+
+    public static Typeface typefaceOf(String file) {
+        if (file == null || file.length() == 0) {
+            return Typeface.DEFAULT;
+        }
+        Typeface t = load(file);
+        return t != null ? t : Typeface.DEFAULT;
+    }
+
+    /** Полный перезапуск приложения, чтобы шрифт применился везде. */
+    public static void restartApp(Context ctx) {
+        try {
+            android.content.Intent i = ctx.getPackageManager().getLaunchIntentForPackage(ctx.getPackageName());
+            if (i == null) {
+                return;
+            }
+            i.addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK | android.content.Intent.FLAG_ACTIVITY_CLEAR_TASK);
+            android.app.PendingIntent pi = android.app.PendingIntent.getActivity(ctx, 7001, i, android.app.PendingIntent.FLAG_CANCEL_CURRENT | android.app.PendingIntent.FLAG_IMMUTABLE);
+            android.app.AlarmManager am = (android.app.AlarmManager) ctx.getSystemService(Context.ALARM_SERVICE);
+            am.set(android.app.AlarmManager.RTC, System.currentTimeMillis() + 400, pi);
+            android.os.Process.killProcess(android.os.Process.myPid());
+        } catch (Throwable ignore) {
+        }
+    }
+
     public static ArrayList<String> available() {
         ArrayList<String> out = new ArrayList<>();
         try {

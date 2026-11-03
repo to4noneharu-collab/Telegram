@@ -222,6 +222,82 @@ public class PikmiUpdater {
                 .show();
     }
 
+    public interface Result {
+        void onResult(String error, String tag, int latest, String body, String apkUrl);
+    }
+
+    public static int currentBuild() {
+        return BUILD;
+    }
+
+    public static String repo() {
+        return REPO;
+    }
+
+    public static void install(Activity a, String url, String tag) {
+        download(a, url, tag);
+    }
+
+    /** Запрос последнего релиза для страницы обновлений. Колбэк вызывается в основном потоке. */
+    public static void fetch(final Activity a, final Result cb) {
+        if (REPO.length() == 0) {
+            cb.onResult("обновления не настроены в этой сборке", "", 0, "", null);
+            return;
+        }
+        new Thread(new Runnable() {
+            @Override
+            public void run() {
+                try {
+                    HttpURLConnection c = (HttpURLConnection) new URL("https://api.github.com/repos/" + REPO + "/releases/latest").openConnection();
+                    c.setConnectTimeout(10000);
+                    c.setReadTimeout(15000);
+                    c.setRequestProperty("Accept", "application/vnd.github+json");
+                    c.setRequestProperty("User-Agent", "PikmiGram");
+                    int code = c.getResponseCode();
+                    if (code != 200) {
+                        throw new IOException("HTTP " + code);
+                    }
+                    StringBuilder sb = new StringBuilder();
+                    BufferedReader r = new BufferedReader(new InputStreamReader(c.getInputStream(), "UTF-8"));
+                    String line;
+                    while ((line = r.readLine()) != null) {
+                        sb.append(line).append('\n');
+                    }
+                    r.close();
+                    JSONObject o = new JSONObject(sb.toString());
+                    final String tag = o.optString("tag_name", "");
+                    final String body = o.optString("body", "");
+                    final int latest = parseBuild(tag);
+                    String apk = null;
+                    JSONArray assets = o.optJSONArray("assets");
+                    if (assets != null) {
+                        for (int i = 0; i < assets.length(); i++) {
+                            JSONObject as = assets.getJSONObject(i);
+                            if (as.optString("name", "").toLowerCase().endsWith(".apk")) {
+                                apk = as.optString("browser_download_url", null);
+                                break;
+                            }
+                        }
+                    }
+                    final String apkUrl = apk;
+                    a.runOnUiThread(new Runnable() {
+                        @Override
+                        public void run() {
+                            cb.onResult(null, tag, latest, body, apkUrl);
+                        }
+                    });
+                } catch (final Throwable e) {
+                    a.runOnUiThread(new Runnable() {
+                        @Override
+                        public void run() {
+                            cb.onResult(String.valueOf(e.getMessage()), "", 0, "", null);
+                        }
+                    });
+                }
+            }
+        }).start();
+    }
+
     private static void download(final Activity a, String url, String tag) {
         try {
             if (Build.VERSION.SDK_INT >= 26 && !a.getPackageManager().canRequestPackageInstalls()) {
