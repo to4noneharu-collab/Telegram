@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
     inputs:
       skip:
-        description: 'Отключить функции для поиска причины вылета (через запятую): accounts (всё про аккаунты), accjava, accnative, updater, appwide, title, locale, screens, silentshot, chatsmenu, cleanupmenu, savemedia, noforwards, noforwardschan, equalizer'
+        description: 'Отключить функции для поиска причины вылета (через запятую): accounts (всё про аккаунты), accjava, accnative, updater, appwide, title, locale, screens, silentshot, chatsmenu, cleanupmenu, savemedia, noforwards, noforwardschan, equalizer, pages'
         required: false
         default: ''
       account_limit:
@@ -109,6 +109,10 @@ jobs:
       - name: PikmiGram chats menu (fonts, shadow ban list, updates)
         if: ${{ !contains(github.event.inputs.skip, 'chatsmenu') }}
         run: python3 .github/scripts/pikmi_menu.py
+
+      - name: PikmiGram full-screen pages (replace dialogs)
+        if: ${{ !contains(github.event.inputs.skip, 'pages') }}
+        run: python3 .github/scripts/pikmi_pages.py
 
       - name: Remove duplicate per-message menu items
         if: ${{ !contains(github.event.inputs.skip, 'cleanupmenu') }}

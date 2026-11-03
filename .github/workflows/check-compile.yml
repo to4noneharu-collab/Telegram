@@ -68,6 +68,8 @@ jobs:
       run: python3 .github/scripts/pikmi_equalizer_hook.py
     - name: PikmiGram chats menu (fonts, shadow ban list, updates)
       run: python3 .github/scripts/pikmi_menu.py
+    - name: PikmiGram full-screen pages (replace dialogs)
+      run: python3 .github/scripts/pikmi_pages.py
     - name: Remove duplicate per-message menu items
       run: python3 .github/scripts/pikmi_cleanup_menu.py
     - name: Save one-time photos and videos
