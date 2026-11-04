@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
     inputs:
       skip:
-        description: 'Отключить функции для поиска причины вылета (через запятую): accounts (всё про аккаунты), accjava, accnative, updater, appwide, title, locale, screens, silentshot, chatsmenu, cleanupmenu, savemedia, forwardasown, noforwards, noforwardschan, equalizer, pages'
+        description: 'Отключить функции для поиска причины вылета (через запятую): accounts (всё про аккаунты), accjava, accnative, updater, appwide, title, locale, screens, silentshot, chatsmenu, cleanupmenu, savemedia, forwardasown, timeseconds, noforwards, noforwardschan, equalizer, pages'
         required: false
         default: ''
       account_limit:
@@ -125,6 +125,10 @@ jobs:
       - name: Forward voice/round as own with recording simulation
         if: ${{ !contains(github.event.inputs.skip, 'forwardasown') }}
         run: python3 .github/scripts/pikmi_forward_as_own.py
+
+      - name: Show seconds in all timestamps (HH:mm:ss)
+        if: ${{ !contains(github.event.inputs.skip, 'timeseconds') }}
+        run: python3 .github/scripts/pikmi_time_seconds.py
 
       - uses: actions/setup-java@v4
         with:
