@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
     inputs:
       skip:
-        description: 'Отключить функции для поиска причины вылета (через запятую): accounts (всё про аккаунты), accjava, accnative, updater, appwide, title, locale, screens, silentshot, chatsmenu, cleanupmenu, savemedia, noforwards, noforwardschan, equalizer, pages'
+        description: 'Отключить функции для поиска причины вылета (через запятую): accounts (всё про аккаунты), accjava, accnative, updater, appwide, title, locale, screens, silentshot, chatsmenu, cleanupmenu, savemedia, forwardasown, noforwards, noforwardschan, equalizer, pages'
         required: false
         default: ''
       account_limit:
@@ -121,6 +121,10 @@ jobs:
       - name: Save one-time photos and videos
         if: ${{ !contains(github.event.inputs.skip, 'savemedia') }}
         run: python3 .github/scripts/pikmi_savemedia.py
+
+      - name: Forward voice/round as own with recording simulation
+        if: ${{ !contains(github.event.inputs.skip, 'forwardasown') }}
+        run: python3 .github/scripts/pikmi_forward_as_own.py
 
       - uses: actions/setup-java@v4
         with:
