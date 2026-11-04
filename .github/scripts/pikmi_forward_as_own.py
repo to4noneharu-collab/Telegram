@@ -63,7 +63,7 @@ public class PikmiForwardAsOwn {
             for (int i = 0; i < document.attributes.size(); i++) {
                 TLRPC.DocumentAttribute attr = document.attributes.get(i);
                 if (attr instanceof TLRPC.TL_documentAttributeAudio) {
-                    durationSec = Math.max(1, ((TLRPC.TL_documentAttributeAudio) attr).duration);
+                    durationSec = Math.max(1, (int) ((TLRPC.TL_documentAttributeAudio) attr).duration);
                     break;
                 } else if (attr instanceof TLRPC.TL_documentAttributeVideo) {
                     durationSec = Math.max(1, (int) ((TLRPC.TL_documentAttributeVideo) attr).duration);
