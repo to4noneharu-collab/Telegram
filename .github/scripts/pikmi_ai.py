@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
-"""Pikmi AI (Groq): перепись исходящих сообщений + настройки на аккаунт.
+"""Pikmi AI (Groq): перепись исходящих + полноценный экран настроек.
 
 - API-ключ и промпт задаются в клиенте
 - Настройки индивидуальны для каждого аккаунта
-- Перед отправкой текст проходит через Groq и уходит уже отредактированным
+- Экран настроек в стиле Telegram (BaseFragment + ячейки)
+- Перед отправкой текст проходит через Groq
 
 Идемпотентен.
 """
@@ -12,25 +13,17 @@ import sys
 from pathlib import Path
 
 HELPER = Path("TMessagesProj/src/main/java/org/telegram/messenger/PikmiAI.java")
+SETTINGS = Path("TMessagesProj/src/main/java/org/telegram/ui/PikmiAISettingsActivity.java")
 CAE = Path("TMessagesProj/src/main/java/org/telegram/ui/Components/ChatActivityEnterView.java")
 DA = Path("TMessagesProj/src/main/java/org/telegram/ui/DialogsActivity.java")
 
-JAVA = r'''package org.telegram.messenger;
+JAVA_HELPER = r'''package org.telegram.messenger;
 
-import android.app.Activity;
-import android.app.AlertDialog;
 import android.content.Context;
 import android.content.SharedPreferences;
 import android.os.Handler;
 import android.os.Looper;
 import android.text.TextUtils;
-import android.util.TypedValue;
-import android.widget.EditText;
-import android.widget.LinearLayout;
-import android.widget.ScrollView;
-import android.widget.Switch;
-import android.widget.TextView;
-import android.widget.Toast;
 
 import org.json.JSONArray;
 import org.json.JSONObject;
@@ -46,21 +39,20 @@ import java.util.concurrent.Executors;
 
 /**
  * Pikmi AI на базе Groq.
- * Настройки (ключ, промпт, вкл/выкл) хранятся отдельно для каждого аккаунта.
+ * Настройки (ключ, промпт, вкл/выкл) — отдельно для каждого аккаунта.
  */
 public class PikmiAI {
 
     private static final String PREFS_PREFIX = "pikmigram_ai_";
-    private static final String DEFAULT_PROMPT =
+    public static final String DEFAULT_PROMPT =
             "Перепиши сообщение вежливо, спокойно и без негатива. Сохрани смысл и язык оригинала. " +
             "Не добавляй приветствий, подписей и пояснений. Верни только готовый текст сообщения.";
     private static final String GROQ_URL = "https://api.groq.com/openai/v1/chat/completions";
-    private static final String MODEL = "llama-3.3-70b-versatile";
+    public static final String MODEL = "llama-3.3-70b-versatile";
 
     private static final ExecutorService executor = Executors.newSingleThreadExecutor();
     private static final Handler mainHandler = new Handler(Looper.getMainLooper());
 
-    /** Флаг, чтобы не зациклить processSendingText */
     public static final ThreadLocal<Boolean> skipRewrite = new ThreadLocal<>();
 
     public interface Callback {
@@ -73,36 +65,25 @@ public class PikmiAI {
     }
 
     public static boolean isRewriteEnabled(int account) {
-        try {
-            return prefs(account).getBoolean("rewrite_enabled", false);
-        } catch (Throwable t) {
-            return false;
-        }
+        try { return prefs(account).getBoolean("rewrite_enabled", false); }
+        catch (Throwable t) { return false; }
     }
 
     public static boolean isAutoReplyEnabled(int account) {
-        try {
-            return prefs(account).getBoolean("auto_reply_enabled", false);
-        } catch (Throwable t) {
-            return false;
-        }
+        try { return prefs(account).getBoolean("auto_reply_enabled", false); }
+        catch (Throwable t) { return false; }
     }
 
     public static String getApiKey(int account) {
-        try {
-            return prefs(account).getString("api_key", "");
-        } catch (Throwable t) {
-            return "";
-        }
+        try { return prefs(account).getString("api_key", ""); }
+        catch (Throwable t) { return ""; }
     }
 
     public static String getPrompt(int account) {
         try {
             String p = prefs(account).getString("prompt", null);
             return TextUtils.isEmpty(p) ? DEFAULT_PROMPT : p;
-        } catch (Throwable t) {
-            return DEFAULT_PROMPT;
-        }
+        } catch (Throwable t) { return DEFAULT_PROMPT; }
     }
 
     public static void setRewriteEnabled(int account, boolean v) {
@@ -145,7 +126,6 @@ public class PikmiAI {
                 sys.put("role", "system");
                 sys.put("content", systemPrompt);
                 messages.put(sys);
-
                 JSONObject user = new JSONObject();
                 user.put("role", "user");
                 user.put("content", original);
@@ -203,75 +183,308 @@ public class PikmiAI {
             }
         });
     }
+}
+'''
 
-    public static void showSettings(final Activity activity, final int account) {
-        if (activity == null) return;
+JAVA_SETTINGS = r'''package org.telegram.ui;
 
-        ScrollView scroll = new ScrollView(activity);
-        LinearLayout root = new LinearLayout(activity);
-        root.setOrientation(LinearLayout.VERTICAL);
-        int pad = AndroidUtilities.dp(20);
-        root.setPadding(pad, pad, pad, pad);
-        scroll.addView(root);
+import android.content.Context;
+import android.graphics.Canvas;
+import android.text.Editable;
+import android.text.InputType;
+import android.text.TextUtils;
+import android.text.TextWatcher;
+import android.util.TypedValue;
+import android.view.Gravity;
+import android.view.View;
+import android.view.ViewGroup;
+import android.view.inputmethod.EditorInfo;
+import android.widget.FrameLayout;
+import android.widget.LinearLayout;
 
-        TextView title = new TextView(activity);
-        title.setText("Pikmi AI (Groq) — аккаунт " + (account + 1));
-        title.setTextSize(TypedValue.COMPLEX_UNIT_SP, 18);
-        title.setPadding(0, 0, 0, AndroidUtilities.dp(12));
-        root.addView(title);
+import androidx.recyclerview.widget.LinearLayoutManager;
+import androidx.recyclerview.widget.RecyclerView;
 
-        final Switch swRewrite = new Switch(activity);
-        swRewrite.setText("Переписывать исходящие");
-        swRewrite.setChecked(isRewriteEnabled(account));
-        root.addView(swRewrite);
+import org.telegram.messenger.AndroidUtilities;
+import org.telegram.messenger.LocaleController;
+import org.telegram.messenger.PikmiAI;
+import org.telegram.messenger.R;
+import org.telegram.ui.ActionBar.ActionBar;
+import org.telegram.ui.ActionBar.BaseFragment;
+import org.telegram.ui.ActionBar.Theme;
+import org.telegram.ui.ActionBar.ThemeDescription;
+import org.telegram.ui.Cells.HeaderCell;
+import org.telegram.ui.Cells.ShadowSectionCell;
+import org.telegram.ui.Cells.TextCheckCell;
+import org.telegram.ui.Cells.TextDetailSettingsCell;
+import org.telegram.ui.Cells.TextInfoPrivacyCell;
+import org.telegram.ui.Cells.TextSettingsCell;
+import org.telegram.ui.Components.EditTextBoldCursor;
+import org.telegram.ui.Components.LayoutHelper;
+import org.telegram.ui.Components.RecyclerListView;
 
-        final Switch swAuto = new Switch(activity);
-        swAuto.setText("Автоответчик (в следующей версии)");
-        swAuto.setChecked(isAutoReplyEnabled(account));
-        swAuto.setEnabled(false);
-        root.addView(swAuto);
+import java.util.ArrayList;
 
-        TextView keyLabel = new TextView(activity);
-        keyLabel.setText("\nAPI-ключ Groq");
-        keyLabel.setPadding(0, AndroidUtilities.dp(12), 0, AndroidUtilities.dp(4));
-        root.addView(keyLabel);
+/**
+ * Полноценный экран настроек Pikmi AI (Groq).
+ * Настройки привязаны к текущему аккаунту.
+ */
+public class PikmiAISettingsActivity extends BaseFragment {
 
-        final EditText keyInput = new EditText(activity);
-        keyInput.setHint("gsk_...");
-        keyInput.setSingleLine(true);
-        keyInput.setText(getApiKey(account));
-        root.addView(keyInput);
+    private RecyclerListView listView;
+    private ListAdapter adapter;
 
-        TextView promptLabel = new TextView(activity);
-        promptLabel.setText("\nПромпт (системный)");
-        promptLabel.setPadding(0, AndroidUtilities.dp(12), 0, AndroidUtilities.dp(4));
-        root.addView(promptLabel);
+    private int rowCount;
+    private int headerRow;
+    private int rewriteRow;
+    private int autoReplyRow;
+    private int section1Row;
+    private int apiKeyHeaderRow;
+    private int apiKeyRow;
+    private int promptHeaderRow;
+    private int promptRow;
+    private int resetPromptRow;
+    private int section2Row;
+    private int infoRow;
 
-        final EditText promptInput = new EditText(activity);
-        promptInput.setHint("Как переписывать сообщения...");
-        promptInput.setMinLines(4);
-        promptInput.setMaxLines(10);
-        promptInput.setText(getPrompt(account));
-        root.addView(promptInput);
+    private EditTextBoldCursor apiKeyEdit;
+    private EditTextBoldCursor promptEdit;
 
-        TextView hint = new TextView(activity);
-        hint.setText("\nКлюч и промпт — отдельно для каждого аккаунта.\nМодель: " + MODEL);
-        hint.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12);
-        hint.setPadding(0, AndroidUtilities.dp(8), 0, 0);
-        root.addView(hint);
+    @Override
+    public boolean onFragmentCreate() {
+        super.onFragmentCreate();
+        updateRows();
+        return true;
+    }
 
-        new AlertDialog.Builder(activity)
-                .setView(scroll)
-                .setPositiveButton("Сохранить", (d, w) -> {
-                    setRewriteEnabled(account, swRewrite.isChecked());
-                    setAutoReplyEnabled(account, swAuto.isChecked());
-                    setApiKey(account, keyInput.getText().toString());
-                    setPrompt(account, promptInput.getText().toString());
-                    Toast.makeText(activity, "Сохранено", Toast.LENGTH_SHORT).show();
-                })
-                .setNegativeButton("Отмена", null)
-                .setNeutralButton("Сбросить промпт", (d, w) -> promptInput.setText(DEFAULT_PROMPT))
-                .show();
+    private void updateRows() {
+        rowCount = 0;
+        headerRow = rowCount++;
+        rewriteRow = rowCount++;
+        autoReplyRow = rowCount++;
+        section1Row = rowCount++;
+        apiKeyHeaderRow = rowCount++;
+        apiKeyRow = rowCount++;
+        promptHeaderRow = rowCount++;
+        promptRow = rowCount++;
+        resetPromptRow = rowCount++;
+        section2Row = rowCount++;
+        infoRow = rowCount++;
+    }
+
+    @Override
+    public View createView(Context context) {
+        actionBar.setBackButtonImage(R.drawable.ic_ab_back);
+        actionBar.setAllowOverlayTitle(true);
+        actionBar.setTitle("Pikmi AI (Groq)");
+        actionBar.setActionBarMenuOnItemClick(new ActionBar.ActionBarMenuOnItemClick() {
+            @Override
+            public void onItemClick(int id) {
+                if (id == -1) {
+                    finishFragment();
+                }
+            }
+        });
+
+        fragmentView = new FrameLayout(context);
+        FrameLayout frame = (FrameLayout) fragmentView;
+        frame.setBackgroundColor(Theme.getColor(Theme.key_windowBackgroundGray));
+
+        listView = new RecyclerListView(context);
+        listView.setLayoutManager(new LinearLayoutManager(context, LinearLayoutManager.VERTICAL, false));
+        listView.setVerticalScrollBarEnabled(false);
+        frame.addView(listView, LayoutHelper.createFrame(LayoutHelper.MATCH_PARENT, LayoutHelper.MATCH_PARENT));
+
+        adapter = new ListAdapter(context);
+        listView.setAdapter(adapter);
+
+        listView.setOnItemClickListener((view, position) -> {
+            if (position == rewriteRow) {
+                boolean next = !PikmiAI.isRewriteEnabled(currentAccount);
+                PikmiAI.setRewriteEnabled(currentAccount, next);
+                if (view instanceof TextCheckCell) {
+                    ((TextCheckCell) view).setChecked(next);
+                }
+            } else if (position == autoReplyRow) {
+                // пока заглушка
+            } else if (position == resetPromptRow) {
+                PikmiAI.setPrompt(currentAccount, PikmiAI.DEFAULT_PROMPT);
+                if (promptEdit != null) {
+                    promptEdit.setText(PikmiAI.DEFAULT_PROMPT);
+                }
+                AndroidUtilities.runOnUIThread(() -> {
+                    if (getParentActivity() != null) {
+                        android.widget.Toast.makeText(getParentActivity(), "Промпт сброшен", android.widget.Toast.LENGTH_SHORT).show();
+                    }
+                });
+            }
+        });
+
+        return fragmentView;
+    }
+
+    @Override
+    public void onPause() {
+        super.onPause();
+        // сохраняем поля при уходе с экрана
+        if (apiKeyEdit != null) {
+            PikmiAI.setApiKey(currentAccount, apiKeyEdit.getText().toString());
+        }
+        if (promptEdit != null) {
+            PikmiAI.setPrompt(currentAccount, promptEdit.getText().toString());
+        }
+    }
+
+    private class ListAdapter extends RecyclerListView.SelectionAdapter {
+
+        private final Context mContext;
+
+        public ListAdapter(Context context) {
+            mContext = context;
+        }
+
+        @Override
+        public boolean isEnabled(RecyclerView.ViewHolder holder) {
+            int pos = holder.getAdapterPosition();
+            return pos == rewriteRow || pos == autoReplyRow || pos == resetPromptRow;
+        }
+
+        @Override
+        public int getItemCount() {
+            return rowCount;
+        }
+
+        @Override
+        public int getItemViewType(int position) {
+            if (position == headerRow || position == apiKeyHeaderRow || position == promptHeaderRow) {
+                return 0; // HeaderCell
+            }
+            if (position == rewriteRow || position == autoReplyRow) {
+                return 1; // TextCheckCell
+            }
+            if (position == section1Row || position == section2Row) {
+                return 2; // ShadowSectionCell
+            }
+            if (position == apiKeyRow || position == promptRow) {
+                return 3; // edit field
+            }
+            if (position == resetPromptRow) {
+                return 4; // TextSettingsCell
+            }
+            if (position == infoRow) {
+                return 5; // TextInfoPrivacyCell
+            }
+            return 0;
+        }
+
+        @Override
+        public RecyclerView.ViewHolder onCreateViewHolder(ViewGroup parent, int viewType) {
+            View view;
+            switch (viewType) {
+                case 0:
+                    view = new HeaderCell(mContext);
+                    view.setBackgroundColor(Theme.getColor(Theme.key_windowBackgroundWhite));
+                    break;
+                case 1:
+                    view = new TextCheckCell(mContext);
+                    view.setBackgroundColor(Theme.getColor(Theme.key_windowBackgroundWhite));
+                    break;
+                case 2:
+                    view = new ShadowSectionCell(mContext);
+                    break;
+                case 3: {
+                    FrameLayout frame = new FrameLayout(mContext);
+                    frame.setBackgroundColor(Theme.getColor(Theme.key_windowBackgroundWhite));
+                    EditTextBoldCursor edit = new EditTextBoldCursor(mContext);
+                    edit.setTextSize(TypedValue.COMPLEX_UNIT_DIP, 16);
+                    edit.setHintTextColor(Theme.getColor(Theme.key_windowBackgroundWhiteHintText));
+                    edit.setTextColor(Theme.getColor(Theme.key_windowBackgroundWhiteBlackText));
+                    edit.setBackground(null);
+                    edit.setPadding(AndroidUtilities.dp(21), AndroidUtilities.dp(15), AndroidUtilities.dp(21), AndroidUtilities.dp(15));
+                    edit.setGravity(Gravity.START | Gravity.TOP);
+                    frame.addView(edit, LayoutHelper.createFrame(LayoutHelper.MATCH_PARENT, LayoutHelper.WRAP_CONTENT));
+                    view = frame;
+                    break;
+                }
+                case 4:
+                    view = new TextSettingsCell(mContext);
+                    view.setBackgroundColor(Theme.getColor(Theme.key_windowBackgroundWhite));
+                    break;
+                case 5:
+                default:
+                    view = new TextInfoPrivacyCell(mContext);
+                    break;
+            }
+            return new RecyclerListView.Holder(view);
+        }
+
+        @Override
+        public void onBindViewHolder(RecyclerView.ViewHolder holder, int position) {
+            switch (holder.getItemViewType()) {
+                case 0: {
+                    HeaderCell cell = (HeaderCell) holder.itemView;
+                    if (position == headerRow) {
+                        cell.setText("Функции");
+                    } else if (position == apiKeyHeaderRow) {
+                        cell.setText("API-ключ Groq");
+                    } else if (position == promptHeaderRow) {
+                        cell.setText("Системный промпт");
+                    }
+                    break;
+                }
+                case 1: {
+                    TextCheckCell cell = (TextCheckCell) holder.itemView;
+                    if (position == rewriteRow) {
+                        cell.setTextAndCheck("Переписывать исходящие", PikmiAI.isRewriteEnabled(currentAccount), true);
+                    } else if (position == autoReplyRow) {
+                        cell.setTextAndCheck("Автоответчик (скоро)", PikmiAI.isAutoReplyEnabled(currentAccount), false);
+                        cell.setEnabled(false);
+                    }
+                    break;
+                }
+                case 3: {
+                    FrameLayout frame = (FrameLayout) holder.itemView;
+                    EditTextBoldCursor edit = (EditTextBoldCursor) frame.getChildAt(0);
+                    if (position == apiKeyRow) {
+                        apiKeyEdit = edit;
+                        edit.setHint("gsk_...");
+                        edit.setSingleLine(true);
+                        edit.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_VISIBLE_PASSWORD);
+                        edit.setImeOptions(EditorInfo.IME_ACTION_DONE);
+                        String key = PikmiAI.getApiKey(currentAccount);
+                        if (!TextUtils.equals(edit.getText(), key)) {
+                            edit.setText(key);
+                        }
+                        edit.setMinHeight(AndroidUtilities.dp(50));
+                    } else if (position == promptRow) {
+                        promptEdit = edit;
+                        edit.setHint("Как переписывать сообщения...");
+                        edit.setSingleLine(false);
+                        edit.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_MULTI_LINE);
+                        edit.setImeOptions(EditorInfo.IME_ACTION_NONE);
+                        edit.setMinLines(4);
+                        edit.setMaxLines(10);
+                        String prompt = PikmiAI.getPrompt(currentAccount);
+                        if (!TextUtils.equals(edit.getText(), prompt)) {
+                            edit.setText(prompt);
+                        }
+                    }
+                    break;
+                }
+                case 4: {
+                    TextSettingsCell cell = (TextSettingsCell) holder.itemView;
+                    cell.setText("Сбросить промпт по умолчанию", false);
+                    cell.setTextColor(Theme.getColor(Theme.key_text_RedRegular));
+                    break;
+                }
+                case 5: {
+                    TextInfoPrivacyCell cell = (TextInfoPrivacyCell) holder.itemView;
+                    cell.setText("Настройки сохраняются отдельно для каждого аккаунта.\nМодель: " + PikmiAI.MODEL + "\n\nПри включённой переписи исходящие сообщения перед отправкой проходят через Groq и уходят уже в отредактированном виде.");
+                    cell.setBackground(Theme.getThemedDrawableByKey(mContext, R.drawable.greydivider, Theme.key_windowBackgroundGrayShadow));
+                    break;
+                }
+            }
+        }
     }
 }
 '''
@@ -287,20 +500,35 @@ def die(msg, hint=None):
 
 def main():
     HELPER.parent.mkdir(parents=True, exist_ok=True)
-    HELPER.write_text(JAVA, encoding="utf-8")
+    HELPER.write_text(JAVA_HELPER, encoding="utf-8")
     print("PikmiAI.java: создан")
 
-    # --- меню ---
+    SETTINGS.parent.mkdir(parents=True, exist_ok=True)
+    SETTINGS.write_text(JAVA_SETTINGS, encoding="utf-8")
+    print("PikmiAISettingsActivity.java: создан")
+
+    # --- меню: открываем Fragment ---
     if not DA.exists():
         die("не найден DialogsActivity.java")
     da = DA.read_text(encoding="utf-8")
-    if "PG_AI_MENU" not in da:
+    if "PG_AI_MENU" in da:
+        # обновим вызов на presentFragment, если ещё старый showSettings
+        if "PikmiAI.showSettings" in da:
+            da = da.replace(
+                "org.telegram.messenger.PikmiAI.showSettings(getParentActivity(), currentAccount);",
+                "presentFragment(new org.telegram.ui.PikmiAISettingsActivity());"
+            )
+            DA.write_text(da, encoding="utf-8")
+            print("меню AI: обновлён вызов на Fragment")
+        else:
+            print("меню AI: уже есть")
+    else:
         if "PikmiUpdater.check(getParentActivity(), true);" in da:
             da = da.replace(
                 "org.telegram.messenger.PikmiUpdater.check(getParentActivity(), true);\n        });",
                 "org.telegram.messenger.PikmiUpdater.check(getParentActivity(), true);\n        });\n"
                 "        io.add(R.drawable.msg_edit, \"PikmiGram: AI (Groq)\", () -> { // PG_AI_MENU\n"
-                "            org.telegram.messenger.PikmiAI.showSettings(getParentActivity(), currentAccount);\n"
+                "            presentFragment(new org.telegram.ui.PikmiAISettingsActivity());\n"
                 "        });",
                 1
             )
@@ -315,14 +543,12 @@ def main():
             insert = (
                 "\n        io.addGap();\n"
                 "        io.add(R.drawable.msg_edit, \"PikmiGram: AI (Groq)\", () -> { // PG_AI_MENU\n"
-                "            org.telegram.messenger.PikmiAI.showSettings(getParentActivity(), currentAccount);\n"
+                "            presentFragment(new org.telegram.ui.PikmiAISettingsActivity());\n"
                 "        });"
             )
             da = rx.sub(lambda m: m.group(1) + insert, da, count=1)
         DA.write_text(da, encoding="utf-8")
-        print("меню AI: добавлено")
-    else:
-        print("меню AI: уже есть")
+        print("меню AI: добавлено (Fragment)")
 
     # --- перехват processSendingText ---
     if not CAE.exists():
@@ -337,7 +563,7 @@ def main():
         "int scheduleRepeatPeriod, long payStars) {"
     )
     if sig not in cae:
-        die("ChatActivityEnterView: не нашёл processSendingText с ожидаемой сигнатурой",
+        die("ChatActivityEnterView: не нашёл processSendingText",
             __import__("subprocess").run(
                 "grep -n 'processSendingText' %s | head -5" % CAE, shell=True,
                 capture_output=True, text=True).stdout)
@@ -381,7 +607,7 @@ def main():
     cae = cae.replace(sig, insert, 1)
     CAE.write_text(cae, encoding="utf-8")
     print("перехват processSendingText: добавлен")
-    print("Готово: Pikmi AI (настройки + перепись исходящих через Groq)")
+    print("Готово: Pikmi AI — полноценный экран настроек + перепись исходящих")
 
 
 if __name__ == "__main__":
