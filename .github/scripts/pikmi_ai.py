@@ -55,8 +55,8 @@ public class PikmiAI {
             "Перепиши сообщение вежливо, спокойно и без негатива. Сохрани смысл и язык оригинала. " +
             "Не добавляй приветствий, подписей и пояснений. Верни только готовый текст сообщения.";
     public static final String DEFAULT_AUTO_PROMPT =
-            "Ты отвечаешь в мессенджере от моего имени. Ответь кратко, по делу и вежливо на входящее сообщение. " +
-            "Не представляйся, не пиши что ты ИИ. Верни только текст ответа.";
+            "Ты отвечаешь в мессенджере от моего имени. Учитывай историю переписки. " +
+            "Ответь кратко, по делу и вежливо. Не представляйся, не пиши что ты ИИ. Верни только текст ответа.";
     private static final String GROQ_URL = "https://api.groq.com/openai/v1/chat/completions";
     public static final String DEFAULT_MODEL = "llama-3.3-70b-versatile";
 
@@ -81,6 +81,61 @@ public class PikmiAI {
 
     /** Чтобы не отвечать повторно на то же сообщение */
     private static final ConcurrentHashMap<String, Long> recentAutoReplies = new ConcurrentHashMap<>();
+
+    /** История диалогов: key = account_dialogId → список {role, content} */
+    private static final ConcurrentHashMap<String, java.util.LinkedList<String[]>> dialogHistory = new ConcurrentHashMap<>();
+
+    public static int getHistoryLimit(int account) {
+        try { return prefs(account).getInt("history_limit", 12); }
+        catch (Throwable t) { return 12; }
+    }
+
+    public static void setHistoryLimit(int account, int n) {
+        prefs(account).edit().putInt("history_limit", Math.max(0, Math.min(40, n))).apply();
+    }
+
+    public static boolean isHistoryEnabled(int account) {
+        try { return prefs(account).getBoolean("history_enabled", true); }
+        catch (Throwable t) { return true; }
+    }
+
+    public static void setHistoryEnabled(int account, boolean v) {
+        prefs(account).edit().putBoolean("history_enabled", v).apply();
+    }
+
+    private static String histKey(int account, long dialogId) {
+        return account + "_" + dialogId;
+    }
+
+    public static void addToHistory(int account, long dialogId, String role, String content) {
+        if (!isHistoryEnabled(account) || content == null || content.length() == 0) return;
+        int limit = getHistoryLimit(account);
+        if (limit <= 0) return;
+        String key = histKey(account, dialogId);
+        java.util.LinkedList<String[]> list = dialogHistory.get(key);
+        if (list == null) {
+            list = new java.util.LinkedList<>();
+            dialogHistory.put(key, list);
+        }
+        // не дублируем подряд одинаковые
+        if (!list.isEmpty()) {
+            String[] last = list.getLast();
+            if (role.equals(last[0]) && content.equals(last[1])) return;
+        }
+        list.add(new String[]{role, content});
+        while (list.size() > limit) {
+            list.removeFirst();
+        }
+    }
+
+    public static void clearHistory(int account, long dialogId) {
+        dialogHistory.remove(histKey(account, dialogId));
+    }
+
+    public static void clearAllHistory(int account) {
+        String prefix = account + "_";
+        dialogHistory.keySet().removeIf(k -> k.startsWith(prefix));
+    }
 
     public interface Callback {
         void onResult(String text);
@@ -179,6 +234,10 @@ public class PikmiAI {
     }
 
     public static void chat(final int account, final String systemPrompt, final String userMessage, final Callback callback) {
+        chat(account, systemPrompt, userMessage, 0, callback);
+    }
+
+    public static void chat(final int account, final String systemPrompt, final String userMessage, final long dialogId, final Callback callback) {
         if (TextUtils.isEmpty(userMessage)) {
             if (callback != null) callback.onResult("");
             return;
@@ -190,6 +249,15 @@ public class PikmiAI {
         }
         final String model = getModel(account);
         final String sysPrompt = systemPrompt != null ? systemPrompt : DEFAULT_PROMPT;
+
+        // снимок истории
+        final java.util.ArrayList<String[]> histSnapshot = new java.util.ArrayList<>();
+        if (dialogId != 0 && isHistoryEnabled(account)) {
+            java.util.LinkedList<String[]> list = dialogHistory.get(histKey(account, dialogId));
+            if (list != null) {
+                histSnapshot.addAll(list);
+            }
+        }
 
         executor.execute(() -> {
             try {
@@ -203,10 +271,30 @@ public class PikmiAI {
                 sys.put("role", "system");
                 sys.put("content", sysPrompt);
                 messages.put(sys);
-                JSONObject user = new JSONObject();
-                user.put("role", "user");
-                user.put("content", userMessage);
-                messages.put(user);
+
+                // история (без последнего user, его добавим отдельно)
+                for (int i = 0; i < histSnapshot.size(); i++) {
+                    String[] pair = histSnapshot.get(i);
+                    JSONObject m = new JSONObject();
+                    m.put("role", pair[0]);
+                    m.put("content", pair[1]);
+                    messages.put(m);
+                }
+
+                // текущее сообщение пользователя (если его ещё нет в конце истории)
+                boolean needUser = true;
+                if (!histSnapshot.isEmpty()) {
+                    String[] last = histSnapshot.get(histSnapshot.size() - 1);
+                    if ("user".equals(last[0]) && userMessage.equals(last[1])) {
+                        needUser = false;
+                    }
+                }
+                if (needUser) {
+                    JSONObject user = new JSONObject();
+                    user.put("role", "user");
+                    user.put("content", userMessage);
+                    messages.put(user);
+                }
                 body.put("messages", messages);
 
                 URL url = new URL(GROQ_URL);
@@ -409,11 +497,15 @@ public class PikmiAI {
             final int thinkChance = getThinkChance(account);
             final int extraThink = getExtraThinkMs(account);
 
+            // сохраняем входящее в историю
+            addToHistory(account, finalDialogId, "user", incoming);
+
             mainHandler.postDelayed(() -> {
-                chat(account, getAutoPrompt(account), incoming, new Callback() {
+                chat(account, getAutoPrompt(account), incoming, finalDialogId, new Callback() {
                     @Override
                     public void onResult(String reply) {
                         if (TextUtils.isEmpty(reply)) return;
+                        addToHistory(account, finalDialogId, "assistant", reply);
                         simulateTypingAndSend(account, finalDialogId, reply, typeMs, thinkChance, extraThink);
                     }
                     @Override
@@ -559,6 +651,9 @@ public class PikmiAISettingsActivity extends BaseFragment {
     private int typeSpeedRow;
     private int thinkChanceRow;
     private int extraThinkRow;
+    private int historyEnabledRow;
+    private int historyLimitRow;
+    private int clearHistoryRow;
     private int section1Row;
     private int apiKeyHeaderRow;
     private int apiKeyRow;
@@ -608,6 +703,9 @@ public class PikmiAISettingsActivity extends BaseFragment {
         typeSpeedRow = rowCount++;
         thinkChanceRow = rowCount++;
         extraThinkRow = rowCount++;
+        historyEnabledRow = rowCount++;
+        historyLimitRow = rowCount++;
+        clearHistoryRow = rowCount++;
         section1Row = rowCount++;
         apiKeyHeaderRow = rowCount++;
         apiKeyRow = rowCount++;
@@ -693,6 +791,28 @@ public class PikmiAISettingsActivity extends BaseFragment {
                     PikmiAI.setExtraThinkMs(currentAccount, v);
                     if (adapter != null) adapter.notifyItemChanged(extraThinkRow);
                 });
+
+            } else if (position == historyEnabledRow) {
+                boolean next = !PikmiAI.isHistoryEnabled(currentAccount);
+                PikmiAI.setHistoryEnabled(currentAccount, next);
+                if (view instanceof TextCheckCell) ((TextCheckCell) view).setChecked(next);
+            } else if (position == historyLimitRow) {
+                showNumberDialog("Сколько сообщений помнить (0–40)", PikmiAI.getHistoryLimit(currentAccount), v -> {
+                    PikmiAI.setHistoryLimit(currentAccount, Math.min(40, v));
+                    if (adapter != null) adapter.notifyItemChanged(historyLimitRow);
+                });
+            } else if (position == clearHistoryRow) {
+                new android.app.AlertDialog.Builder(getParentActivity())
+                        .setTitle("Очистить историю")
+                        .setMessage("Сбросить память диалогов для этого аккаунта?")
+                        .setPositiveButton("Очистить", (d, w) -> {
+                            PikmiAI.clearAllHistory(currentAccount);
+                            if (getParentActivity() != null)
+                                android.widget.Toast.makeText(getParentActivity(), "История очищена", android.widget.Toast.LENGTH_SHORT).show();
+                        })
+                        .setNegativeButton("Отмена", null)
+                        .show();
+
             } else if (position == modelRow) {
                 showModelDialog();
             } else if (position == resetPromptRow) {
@@ -874,6 +994,7 @@ public class PikmiAISettingsActivity extends BaseFragment {
             int pos = holder.getAdapterPosition();
             return pos == rewriteRow || pos == autoReplyRow || pos == autoScopeRow || pos == modelRow
                     || pos == thinkDelayRow || pos == typeSpeedRow || pos == thinkChanceRow || pos == extraThinkRow
+                    || pos == historyEnabledRow || pos == historyLimitRow || pos == clearHistoryRow
                     || pos == resetPromptRow
                     || pos == addUserRow || (pos >= usersStartRow && pos < usersEndRow);
         }
@@ -885,11 +1006,12 @@ public class PikmiAISettingsActivity extends BaseFragment {
         public int getItemViewType(int position) {
             if (position == headerRow || position == apiKeyHeaderRow || position == promptHeaderRow
                     || position == autoPromptHeaderRow || position == usersHeaderRow) return 0;
-            if (position == rewriteRow || position == autoReplyRow) return 1;
+            if (position == rewriteRow || position == autoReplyRow || position == historyEnabledRow) return 1;
             if (position == section1Row || position == section2Row || position == section3Row) return 2;
             if (position == apiKeyRow || position == promptRow || position == autoPromptRow) return 3;
             if (position == autoScopeRow || position == modelRow || position == thinkDelayRow || position == typeSpeedRow
-                    || position == thinkChanceRow || position == extraThinkRow || position == resetPromptRow || position == addUserRow
+                    || position == thinkChanceRow || position == extraThinkRow || position == historyLimitRow
+                    || position == clearHistoryRow || position == resetPromptRow || position == addUserRow
                     || (position >= usersStartRow && position < usersEndRow)) return 4;
             return 5;
         }
@@ -952,6 +1074,8 @@ public class PikmiAISettingsActivity extends BaseFragment {
                         cell.setTextAndCheck("Переписывать исходящие", PikmiAI.isRewriteEnabled(currentAccount), true);
                     else if (position == autoReplyRow)
                         cell.setTextAndCheck("Автоответчик", PikmiAI.isAutoReplyEnabled(currentAccount), true);
+                    else if (position == historyEnabledRow)
+                        cell.setTextAndCheck("Память диалога", PikmiAI.isHistoryEnabled(currentAccount), true);
                     break;
                 }
                 case 3: {
@@ -996,6 +1120,11 @@ public class PikmiAISettingsActivity extends BaseFragment {
                         cell.setTextAndValue("Шанс раздумий", PikmiAI.getThinkChance(currentAccount) + "%", true);
                     } else if (position == extraThinkRow) {
                         cell.setTextAndValue("Длительность раздумий", PikmiAI.getExtraThinkMs(currentAccount) + " мс", true);
+                    } else if (position == historyLimitRow) {
+                        cell.setTextAndValue("Глубина истории", PikmiAI.getHistoryLimit(currentAccount) + " сообщ.", true);
+                    } else if (position == clearHistoryRow) {
+                        cell.setText("Очистить память диалогов", false);
+                        cell.setTextColor(Theme.getColor(Theme.key_text_RedRegular));
                     } else if (position == autoScopeRow) {
                         String scope = PikmiAI.getAutoScope(currentAccount);
                         String label = "all".equals(scope) ? "Все чаты" : "Только ЛС";
