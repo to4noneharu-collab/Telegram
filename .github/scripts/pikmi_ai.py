@@ -364,8 +364,8 @@ def main():
                 }
                 @Override
                 public void onError(String error) {
-                    if (getParentActivity() != null) {
-                        android.widget.Toast.makeText(getParentActivity(), "AI: " + error, android.widget.Toast.LENGTH_SHORT).show();
+                    if (parentActivity != null) {
+                        android.widget.Toast.makeText(parentActivity, "AI: " + error, android.widget.Toast.LENGTH_SHORT).show();
                     }
                     org.telegram.messenger.PikmiAI.skipRewrite.set(Boolean.TRUE);
                     try {
