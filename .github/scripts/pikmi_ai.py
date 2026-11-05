@@ -361,7 +361,6 @@ import org.telegram.messenger.R;
 import org.telegram.messenger.UserObject;
 import org.telegram.tgnet.TLRPC;
 import org.telegram.ui.ActionBar.ActionBar;
-import org.telegram.ui.ActionBar.AlertDialog;
 import org.telegram.ui.ActionBar.BaseFragment;
 import org.telegram.ui.ActionBar.Theme;
 import org.telegram.ui.Cells.HeaderCell;
@@ -496,7 +495,7 @@ public class PikmiAISettingsActivity extends BaseFragment {
                 showAddUserDialog();
             } else if (position >= usersStartRow && position < usersEndRow) {
                 final long uid = userList.get(position - usersStartRow);
-                new AlertDialog.Builder(getParentActivity())
+                new android.app.AlertDialog.Builder(getParentActivity())
                         .setTitle("Удалить?")
                         .setMessage("Убрать пользователя из автоответчика?")
                         .setPositiveButton("Удалить", (d, w) -> {
@@ -525,7 +524,7 @@ public class PikmiAISettingsActivity extends BaseFragment {
             if (PikmiAI.MODELS[i].equals(current)) { checked = i; break; }
         }
 
-        new AlertDialog.Builder(getParentActivity())
+        new android.app.AlertDialog.Builder(getParentActivity())
                 .setTitle("Модель Groq")
                 .setSingleChoiceItems(labels, checked, (d, which) -> {
                     if (which < PikmiAI.MODELS.length) {
@@ -548,7 +547,7 @@ public class PikmiAISettingsActivity extends BaseFragment {
         input.setSingleLine(true);
         input.setText(current);
         input.setPadding(AndroidUtilities.dp(20), AndroidUtilities.dp(16), AndroidUtilities.dp(20), AndroidUtilities.dp(16));
-        new AlertDialog.Builder(getParentActivity())
+        new android.app.AlertDialog.Builder(getParentActivity())
                 .setTitle("Своя модель")
                 .setView(input)
                 .setPositiveButton("Сохранить", (d, w) -> {
@@ -568,7 +567,7 @@ public class PikmiAISettingsActivity extends BaseFragment {
         input.setHint("ID пользователя или @username");
         input.setSingleLine(true);
         input.setPadding(AndroidUtilities.dp(20), AndroidUtilities.dp(16), AndroidUtilities.dp(20), AndroidUtilities.dp(16));
-        new AlertDialog.Builder(getParentActivity())
+        new android.app.AlertDialog.Builder(getParentActivity())
                 .setTitle("Добавить в автоответчик")
                 .setMessage("Введите числовой ID пользователя или @username")
                 .setView(input)
