@@ -17,6 +17,7 @@ SETTINGS = Path("TMessagesProj/src/main/java/org/telegram/ui/PikmiAISettingsActi
 CAE = Path("TMessagesProj/src/main/java/org/telegram/ui/Components/ChatActivityEnterView.java")
 DA = Path("TMessagesProj/src/main/java/org/telegram/ui/DialogsActivity.java")
 MC = Path("TMessagesProj/src/main/java/org/telegram/messenger/MessagesController.java")
+AL = Path("TMessagesProj/src/main/java/org/telegram/messenger/ApplicationLoader.java")
 
 JAVA_HELPER = r'''package org.telegram.messenger;
 
@@ -264,71 +265,238 @@ public class PikmiAI {
         chat(account, getPrompt(account), original, callback);
     }
 
+    /** "private" = только ЛС, "all" = все чаты */
+    public static String getAutoScope(int account) {
+        try {
+            String s = prefs(account).getString("auto_scope", "private");
+            return TextUtils.isEmpty(s) ? "private" : s;
+        } catch (Throwable t) { return "private"; }
+    }
+
+    public static void setAutoScope(int account, String scope) {
+        if (!"all".equals(scope)) scope = "private";
+        prefs(account).edit().putString("auto_scope", scope).apply();
+    }
+
+    /** Задержка «подумать» до начала набора, мс (по умолчанию 800) */
+    public static int getThinkDelayMs(int account) {
+        try { return prefs(account).getInt("think_delay_ms", 800); }
+        catch (Throwable t) { return 800; }
+    }
+    public static void setThinkDelayMs(int account, int ms) {
+        prefs(account).edit().putInt("think_delay_ms", Math.max(0, ms)).apply();
+    }
+
+    /** Скорость печати: миллисекунд на символ (по умолчанию 40 ≈ 25 симв/сек) */
+    public static int getTypeMsPerChar(int account) {
+        try { return prefs(account).getInt("type_ms_per_char", 40); }
+        catch (Throwable t) { return 40; }
+    }
+    public static void setTypeMsPerChar(int account, int ms) {
+        prefs(account).edit().putInt("type_ms_per_char", Math.max(0, ms)).apply();
+    }
+
+    /** Шанс дополнительного «раздумья» 0–100% (по умолчанию 30) */
+    public static int getThinkChance(int account) {
+        try { return prefs(account).getInt("think_chance", 30); }
+        catch (Throwable t) { return 30; }
+    }
+    public static void setThinkChance(int account, int pct) {
+        prefs(account).edit().putInt("think_chance", Math.max(0, Math.min(100, pct))).apply();
+    }
+
+    /** Длительность доп. раздумья, мс (по умолчанию 1200) */
+    public static int getExtraThinkMs(int account) {
+        try { return prefs(account).getInt("extra_think_ms", 1200); }
+        catch (Throwable t) { return 1200; }
+    }
+    public static void setExtraThinkMs(int account, int ms) {
+        prefs(account).edit().putInt("extra_think_ms", Math.max(0, ms)).apply();
+    }
+
+    private static boolean observersRegistered = false;
+
+    /** Подписка на новые сообщения для всех аккаунтов */
+    public static synchronized void ensureObservers() {
+        if (observersRegistered) return;
+        observersRegistered = true;
+        for (int a = 0; a < UserConfig.MAX_ACCOUNT_COUNT; a++) {
+            final int account = a;
+            NotificationCenter.getInstance(account).addObserver(new NotificationCenter.NotificationCenterDelegate() {
+                @Override
+                public void didReceivedNotification(int id, int account2, Object... args) {
+                    if (id != NotificationCenter.didReceiveNewMessages) return;
+                    try {
+                        if (args == null || args.length < 2) return;
+                        boolean scheduled = args.length > 2 && args[2] instanceof Boolean && (Boolean) args[2];
+                        if (scheduled) return;
+                        ArrayList<MessageObject> messages = (ArrayList<MessageObject>) args[1];
+                        if (messages == null) return;
+                        for (int i = 0; i < messages.size(); i++) {
+                            MessageObject mo = messages.get(i);
+                            if (mo != null && mo.messageOwner != null) {
+                                onIncomingMessage(account, mo.messageOwner);
+                            }
+                        }
+                    } catch (Throwable e) {
+                        FileLog.e(e);
+                    }
+                }
+            }, NotificationCenter.didReceiveNewMessages);
+        }
+        FileLog.d("PikmiAI: auto-reply observers registered");
+    }
+
     /**
-     * Вызывается при получении нового входящего сообщения.
      * Если автоответчик включён и отправитель в списке — генерирует и отправляет ответ.
      */
     public static void onIncomingMessage(final int account, final TLRPC.Message message) {
         try {
+            ensureObservers(); // на всякий случай
             if (message == null || message.out) return;
+            if (message.action != null) return;
             if (!isAutoReplyEnabled(account)) return;
             if (TextUtils.isEmpty(getApiKey(account))) return;
+
+            long dialogId = MessageObject.getDialogId(message);
+            if (dialogId == 0) return;
+
+            boolean isPrivate = dialogId > 0;
+            String scope = getAutoScope(account);
+            if ("private".equals(scope) && !isPrivate) return;
 
             long fromId = 0;
             if (message.from_id != null) {
                 if (message.from_id.user_id != 0) fromId = message.from_id.user_id;
-                else if (message.from_id.channel_id != 0) fromId = -message.from_id.channel_id;
             }
-            if (fromId == 0 && message.peer_id != null && message.peer_id.user_id != 0) {
-                fromId = message.peer_id.user_id;
+            if (fromId == 0 && isPrivate) {
+                fromId = dialogId;
             }
-            if (fromId == 0 || !isAutoReplyUser(account, fromId)) return;
+            if (fromId == 0) return;
+            if (!isAutoReplyUser(account, fromId)) return;
 
-            // только личные чаты
-            if (message.peer_id == null || message.peer_id.user_id == 0) return;
+            // не отвечаем самим себе
+            if (fromId == UserConfig.getInstance(account).getClientUserId()) return;
 
-            String key = account + "_" + message.dialog_id + "_" + message.id;
+            String key = account + "_" + dialogId + "_" + message.id;
             Long prev = recentAutoReplies.putIfAbsent(key, System.currentTimeMillis());
             if (prev != null) return;
 
-            // чистим старые ключи
-            if (recentAutoReplies.size() > 200) {
+            if (recentAutoReplies.size() > 300) {
                 long now = System.currentTimeMillis();
                 recentAutoReplies.entrySet().removeIf(e -> now - e.getValue() > 600000);
             }
 
             String text = message.message;
             if (TextUtils.isEmpty(text)) {
-                if (message.media != null) text = "[медиа]";
+                if (message.media != null) text = "[медиа-сообщение]";
                 else return;
             }
 
-            final long dialogId = message.dialog_id != 0 ? message.dialog_id : fromId;
+            final long finalDialogId = dialogId;
             final String incoming = text;
+            final int msgId = message.id;
 
-            // небольшая задержка, чтобы выглядело естественнее
+            // Сразу отмечаем прочитанным
+            try {
+                markDialogAsRead(account, finalDialogId, msgId);
+            } catch (Throwable e) {
+                FileLog.e(e);
+            }
+
+            final int thinkDelay = getThinkDelayMs(account);
+            final int typeMs = getTypeMsPerChar(account);
+            final int thinkChance = getThinkChance(account);
+            final int extraThink = getExtraThinkMs(account);
+
             mainHandler.postDelayed(() -> {
                 chat(account, getAutoPrompt(account), incoming, new Callback() {
                     @Override
                     public void onResult(String reply) {
                         if (TextUtils.isEmpty(reply)) return;
-                        try {
-                            SendMessagesHelper.SendMessageParams params =
-                                    SendMessagesHelper.SendMessageParams.of(reply, dialogId);
-                            params.notify = true;
-                            SendMessagesHelper.getInstance(account).sendMessage(params);
-                        } catch (Throwable e) {
-                            FileLog.e(e);
-                        }
+                        simulateTypingAndSend(account, finalDialogId, reply, typeMs, thinkChance, extraThink);
                     }
                     @Override
                     public void onError(String error) {
                         FileLog.e("PikmiAI auto-reply error: " + error);
                     }
                 });
-            }, 1500 + (int) (Math.random() * 2000));
+            }, thinkDelay);
         } catch (Throwable e) {
             FileLog.e(e);
+        }
+    }
+
+    private static void markDialogAsRead(int account, long dialogId, int maxId) {
+        try {
+            MessagesController mc = MessagesController.getInstance(account);
+            // maxPositiveId, maxNegativeId, maxPositiveDate, maxNegativeDate, wasUnread, pinned, threadId, reaction, threadUnread, unreadCount
+            mc.markDialogAsRead(dialogId, maxId, maxId, Math.max(1, (int) (System.currentTimeMillis() / 1000)), false, 0, 0, true, 0);
+        } catch (Throwable e) {
+            try {
+                MessagesController.getInstance(account).markDialogAsRead(dialogId, maxId, maxId, 0, false, 0, 0, true, 0);
+            } catch (Throwable e2) {
+                FileLog.e(e2);
+            }
+        }
+    }
+
+    private static void simulateTypingAndSend(final int account, final long dialogId, final String reply,
+                                              final int typeMsPerChar, final int thinkChance, final int extraThinkMs) {
+        try {
+            final MessagesController mc = MessagesController.getInstance(account);
+            // action: 0 = typing
+            mc.sendTyping(dialogId, 0, 0, 0);
+
+            int typingDuration = Math.max(400, reply.length() * Math.max(0, typeMsPerChar));
+            // ограничим, чтобы не висело минутами
+            if (typingDuration > 15000) typingDuration = 15000;
+
+            int pause = 0;
+            if (thinkChance > 0 && (int) (Math.random() * 100) < thinkChance) {
+                pause = extraThinkMs + (int) (Math.random() * Math.max(1, extraThinkMs / 2));
+                // во время раздумья typing может пропасть — возобновим перед отправкой
+            }
+
+            final int totalDelay = typingDuration + pause;
+
+            // периодически обновляем typing
+            final int[] ticks = new int[]{0};
+            final Runnable tick = new Runnable() {
+                @Override
+                public void run() {
+                    try {
+                        if (ticks[0] * 4000 < totalDelay) {
+                            mc.sendTyping(dialogId, 0, 0, 0);
+                            ticks[0]++;
+                            mainHandler.postDelayed(this, 4000);
+                        }
+                    } catch (Throwable ignore) {}
+                }
+            };
+            mainHandler.postDelayed(tick, 3500);
+
+            mainHandler.postDelayed(() -> {
+                try {
+                    SendMessagesHelper.SendMessageParams params =
+                            SendMessagesHelper.SendMessageParams.of(reply, dialogId);
+                    params.notify = true;
+                    SendMessagesHelper.getInstance(account).sendMessage(params);
+                    FileLog.d("PikmiAI auto-reply sent to " + dialogId + " after " + totalDelay + "ms");
+                } catch (Throwable e) {
+                    FileLog.e(e);
+                }
+            }, totalDelay);
+        } catch (Throwable e) {
+            FileLog.e(e);
+            try {
+                SendMessagesHelper.SendMessageParams params =
+                        SendMessagesHelper.SendMessageParams.of(reply, dialogId);
+                params.notify = true;
+                SendMessagesHelper.getInstance(account).sendMessage(params);
+            } catch (Throwable e2) {
+                FileLog.e(e2);
+            }
         }
     }
 }
@@ -385,7 +553,12 @@ public class PikmiAISettingsActivity extends BaseFragment {
     private int headerRow;
     private int rewriteRow;
     private int autoReplyRow;
+    private int autoScopeRow;
     private int modelRow;
+    private int thinkDelayRow;
+    private int typeSpeedRow;
+    private int thinkChanceRow;
+    private int extraThinkRow;
     private int section1Row;
     private int apiKeyHeaderRow;
     private int apiKeyRow;
@@ -429,7 +602,12 @@ public class PikmiAISettingsActivity extends BaseFragment {
         headerRow = rowCount++;
         rewriteRow = rowCount++;
         autoReplyRow = rowCount++;
+        autoScopeRow = rowCount++;
         modelRow = rowCount++;
+        thinkDelayRow = rowCount++;
+        typeSpeedRow = rowCount++;
+        thinkChanceRow = rowCount++;
+        extraThinkRow = rowCount++;
         section1Row = rowCount++;
         apiKeyHeaderRow = rowCount++;
         apiKeyRow = rowCount++;
@@ -450,6 +628,7 @@ public class PikmiAISettingsActivity extends BaseFragment {
 
     @Override
     public View createView(Context context) {
+        org.telegram.messenger.PikmiAI.ensureObservers();
         actionBar.setBackButtonImage(R.drawable.ic_ab_back);
         actionBar.setAllowOverlayTitle(true);
         actionBar.setTitle("Pikmi AI (Groq)");
@@ -480,6 +659,40 @@ public class PikmiAISettingsActivity extends BaseFragment {
                 boolean next = !PikmiAI.isAutoReplyEnabled(currentAccount);
                 PikmiAI.setAutoReplyEnabled(currentAccount, next);
                 if (view instanceof TextCheckCell) ((TextCheckCell) view).setChecked(next);
+            } else if (position == autoScopeRow) {
+                final String cur = PikmiAI.getAutoScope(currentAccount);
+                final String[] opts = new String[]{"Только личные чаты (ЛС)", "Все чаты"};
+                int checked = "all".equals(cur) ? 1 : 0;
+                new android.app.AlertDialog.Builder(getParentActivity())
+                        .setTitle("Где работает автоответчик")
+                        .setSingleChoiceItems(opts, checked, (d, which) -> {
+                            PikmiAI.setAutoScope(currentAccount, which == 1 ? "all" : "private");
+                            if (adapter != null) adapter.notifyItemChanged(autoScopeRow);
+                            d.dismiss();
+                        })
+                        .setNegativeButton("Отмена", null)
+                        .show();
+
+            } else if (position == thinkDelayRow) {
+                showNumberDialog("Задержка «подумать» (мс)", PikmiAI.getThinkDelayMs(currentAccount), v -> {
+                    PikmiAI.setThinkDelayMs(currentAccount, v);
+                    if (adapter != null) adapter.notifyItemChanged(thinkDelayRow);
+                });
+            } else if (position == typeSpeedRow) {
+                showNumberDialog("Мс на символ (скорость печати)", PikmiAI.getTypeMsPerChar(currentAccount), v -> {
+                    PikmiAI.setTypeMsPerChar(currentAccount, v);
+                    if (adapter != null) adapter.notifyItemChanged(typeSpeedRow);
+                });
+            } else if (position == thinkChanceRow) {
+                showNumberDialog("Шанс раздумий (0–100%)", PikmiAI.getThinkChance(currentAccount), v -> {
+                    PikmiAI.setThinkChance(currentAccount, Math.min(100, v));
+                    if (adapter != null) adapter.notifyItemChanged(thinkChanceRow);
+                });
+            } else if (position == extraThinkRow) {
+                showNumberDialog("Длительность раздумий (мс)", PikmiAI.getExtraThinkMs(currentAccount), v -> {
+                    PikmiAI.setExtraThinkMs(currentAccount, v);
+                    if (adapter != null) adapter.notifyItemChanged(extraThinkRow);
+                });
             } else if (position == modelRow) {
                 showModelDialog();
             } else if (position == resetPromptRow) {
@@ -636,7 +849,9 @@ public class PikmiAISettingsActivity extends BaseFragment {
         @Override
         public boolean isEnabled(RecyclerView.ViewHolder holder) {
             int pos = holder.getAdapterPosition();
-            return pos == rewriteRow || pos == autoReplyRow || pos == modelRow || pos == resetPromptRow
+            return pos == rewriteRow || pos == autoReplyRow || pos == autoScopeRow || pos == modelRow
+                    || pos == thinkDelayRow || pos == typeSpeedRow || pos == thinkChanceRow || pos == extraThinkRow
+                    || pos == resetPromptRow
                     || pos == addUserRow || (pos >= usersStartRow && pos < usersEndRow);
         }
 
@@ -650,7 +865,8 @@ public class PikmiAISettingsActivity extends BaseFragment {
             if (position == rewriteRow || position == autoReplyRow) return 1;
             if (position == section1Row || position == section2Row || position == section3Row) return 2;
             if (position == apiKeyRow || position == promptRow || position == autoPromptRow) return 3;
-            if (position == modelRow || position == resetPromptRow || position == addUserRow
+            if (position == autoScopeRow || position == modelRow || position == thinkDelayRow || position == typeSpeedRow
+                    || position == thinkChanceRow || position == extraThinkRow || position == resetPromptRow || position == addUserRow
                     || (position >= usersStartRow && position < usersEndRow)) return 4;
             return 5;
         }
@@ -748,7 +964,20 @@ public class PikmiAISettingsActivity extends BaseFragment {
                 case 4: {
                     TextSettingsCell cell = (TextSettingsCell) holder.itemView;
                     cell.setTextColor(Theme.getColor(Theme.key_windowBackgroundWhiteBlackText));
-                    if (position == modelRow) {
+
+                    if (position == thinkDelayRow) {
+                        cell.setTextAndValue("Подумать перед ответом", PikmiAI.getThinkDelayMs(currentAccount) + " мс", true);
+                    } else if (position == typeSpeedRow) {
+                        cell.setTextAndValue("Скорость печати", PikmiAI.getTypeMsPerChar(currentAccount) + " мс/символ", true);
+                    } else if (position == thinkChanceRow) {
+                        cell.setTextAndValue("Шанс раздумий", PikmiAI.getThinkChance(currentAccount) + "%", true);
+                    } else if (position == extraThinkRow) {
+                        cell.setTextAndValue("Длительность раздумий", PikmiAI.getExtraThinkMs(currentAccount) + " мс", true);
+                    } else if (position == autoScopeRow) {
+                        String scope = PikmiAI.getAutoScope(currentAccount);
+                        String label = "all".equals(scope) ? "Все чаты" : "Только ЛС";
+                        cell.setTextAndValue("Область автоответа", label, true);
+                    } else if (position == modelRow) {
                         String model = PikmiAI.getModel(currentAccount);
                         String label = model;
                         for (int i = 0; i < PikmiAI.MODELS.length; i++) {
@@ -772,8 +1001,9 @@ public class PikmiAISettingsActivity extends BaseFragment {
                 case 5: {
                     TextInfoPrivacyCell cell = (TextInfoPrivacyCell) holder.itemView;
                     cell.setText("Настройки отдельные для каждого аккаунта.\nМодель: " + PikmiAI.getModel(currentAccount) +
-                            "\n\nАвтоответчик отвечает только пользователям из списка (личные чаты). " +
-                            "Можно указать ID или @username.");
+                            "\nОбласть: " + ("all".equals(PikmiAI.getAutoScope(currentAccount)) ? "все чаты" : "только ЛС") +
+                            "\n\nАвтоответчик отвечает пользователям из списка. " +
+                            "Добавляйте по ID или @username.");
                     cell.setBackground(Theme.getThemedDrawableByKey(mContext, R.drawable.greydivider, Theme.key_windowBackgroundGrayShadow));
                     break;
                 }
@@ -943,7 +1173,31 @@ def main():
         else:
             print("предупреждение: не нашёл якорь для хука автоответчика в processUpdateArray")
 
-    print("Готово: Pikmi AI — своя модель + автоответчик со списком пользователей")
+
+    # Ранняя регистрация observers в ApplicationLoader
+    if AL.exists():
+        al = AL.read_text(encoding="utf-8")
+        if "PG_AI_OBSERVERS" not in al:
+            if "applicationInited = true;" in al:
+                al = al.replace(
+                    "applicationInited = true;",
+                    "applicationInited = true;\n"
+                    "        AndroidUtilities.runOnUIThread(() -> {\n"
+                    "            try { org.telegram.messenger.PikmiAI.ensureObservers(); } catch (Throwable ignore) {}\n"
+                    "        }, 3000); // PG_AI_OBSERVERS",
+                    1
+                )
+                AL.write_text(al, encoding="utf-8")
+                print("observers: регистрация в ApplicationLoader")
+            else:
+                print("предупреждение: не нашёл applicationInited в ApplicationLoader")
+        else:
+            print("observers: уже есть в ApplicationLoader")
+    else:
+        print("ApplicationLoader.java не найден")
+
+    print("Готово: Pikmi AI — своя модель + автоответчик (ЛС/все чаты)")
+
 
 
 if __name__ == "__main__":
