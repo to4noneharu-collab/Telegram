@@ -725,6 +725,29 @@ public class PikmiAISettingsActivity extends BaseFragment {
         return fragmentView;
     }
 
+
+    private interface IntCallback { void onValue(int v); }
+
+    private void showNumberDialog(String title, int current, IntCallback cb) {
+        if (getParentActivity() == null) return;
+        final EditText input = new EditText(getParentActivity());
+        input.setInputType(android.text.InputType.TYPE_CLASS_NUMBER);
+        input.setSingleLine(true);
+        input.setText(String.valueOf(current));
+        input.setPadding(AndroidUtilities.dp(20), AndroidUtilities.dp(16), AndroidUtilities.dp(20), AndroidUtilities.dp(16));
+        new android.app.AlertDialog.Builder(getParentActivity())
+                .setTitle(title)
+                .setView(input)
+                .setPositiveButton("OK", (d, w) -> {
+                    try {
+                        int v = Integer.parseInt(input.getText().toString().trim());
+                        if (cb != null) cb.onValue(Math.max(0, v));
+                    } catch (Exception ignore) {}
+                })
+                .setNegativeButton("Отмена", null)
+                .show();
+    }
+
     private void showModelDialog() {
         if (getParentActivity() == null) return;
         final String current = PikmiAI.getModel(currentAccount);
