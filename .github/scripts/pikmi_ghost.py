@@ -240,7 +240,7 @@ public class PikmiGhostSettingsActivity extends BaseFragment {
                 case 3: {
                     TextInfoPrivacyCell cell = (TextInfoPrivacyCell) holder.itemView;
                     cell.setText("Оффлайн и «тихие сообщения» блокируют отправку online-статуса на сервер, в том числе при написании.\n\n"
-                            + "Без автопрочтения отключает чтение входящих во всех типах чатов: сервер не получает «прочитано».\n\n"
+                            + "Без автопрочтения: у вас в клиенте сообщения читаются, но серверу Telegram статус «прочитано» не отправляется. Оффлайн/тихие также отключают индикатор «печатает».\n\n"
                             + "Настройки сохраняются отдельно для каждого аккаунта.");
                     cell.setBackground(Theme.getThemedDrawableByKey(mContext, R.drawable.greydivider, Theme.key_windowBackgroundGrayShadow));
                     break;
@@ -273,95 +273,138 @@ def main():
         die("не найден MessagesController.java")
     mc = MC.read_text(encoding="utf-8")
 
-    # 1) Блок online в updateTimerProc
-    if "PG_GHOST_ONLINE" not in mc:
-        old = (
-            "if (!ignoreSetOnline && getConnectionsManager().getPauseTime() == 0 && "
-            "ApplicationLoader.isScreenOn && !ApplicationLoader.mainInterfacePausedStageQueue) {"
+    # --- ONLINE: переписываем блок updateTimerProc ---
+    # Когда ghost: не слать online; активно слать offline даже при открытом приложении
+    if "PG_GHOST_ONLINE_BLOCK" not in mc:
+        old_online = (
+            "            if (!ignoreSetOnline && getConnectionsManager().getPauseTime() == 0 && ApplicationLoader.isScreenOn && !ApplicationLoader.mainInterfacePausedStageQueue) {\n"
+            "                if (ApplicationLoader.mainInterfacePausedStageQueueTime != 0 && Math.abs(ApplicationLoader.mainInterfacePausedStageQueueTime - System.currentTimeMillis()) > 1000) {\n"
+            "                    if (statusSettingState != 1 && (lastStatusUpdateTime == 0 || Math.abs(System.currentTimeMillis() - lastStatusUpdateTime) >= 55000 || offlineSent)) {\n"
+            "                        statusSettingState = 1;\n"
+            "\n"
+            "                        if (statusRequest != 0) {\n"
+            "                            getConnectionsManager().cancelRequest(statusRequest, true);\n"
+            "                        }\n"
+            "\n"
+            "                        TL_account.updateStatus req = new TL_account.updateStatus();\n"
+            "                        req.offline = false;\n"
+            "                        statusRequest = getConnectionsManager().sendRequest(req, (response, error) -> {\n"
+            "                            if (error == null) {\n"
+            "                                lastStatusUpdateTime = System.currentTimeMillis();\n"
+            "                                offlineSent = false;\n"
+            "                                statusSettingState = 0;\n"
+            "                            } else {\n"
+            "                                if (lastStatusUpdateTime != 0) {\n"
+            "                                    lastStatusUpdateTime += 5000;\n"
+            "                                }\n"
+            "                            }\n"
+            "                            statusRequest = 0;\n"
+            "                        });\n"
+            "                    }\n"
+            "                }\n"
+            "            } else if (statusSettingState != 2 && !offlineSent && Math.abs(System.currentTimeMillis() - getConnectionsManager().getPauseTime()) >= 2000) {\n"
         )
-        new = (
-            "if (!ignoreSetOnline && !org.telegram.messenger.PikmiGhost.shouldHideOnline(currentAccount) "
-            "&& getConnectionsManager().getPauseTime() == 0 && "
-            "ApplicationLoader.isScreenOn && !ApplicationLoader.mainInterfacePausedStageQueue) { // PG_GHOST_ONLINE"
+        new_online = (
+            "            // PG_GHOST_ONLINE_BLOCK\n"
+            "            final boolean pgHideOnline = org.telegram.messenger.PikmiGhost.shouldHideOnline(currentAccount);\n"
+            "            if (!pgHideOnline && !ignoreSetOnline && getConnectionsManager().getPauseTime() == 0 && ApplicationLoader.isScreenOn && !ApplicationLoader.mainInterfacePausedStageQueue) {\n"
+            "                if (ApplicationLoader.mainInterfacePausedStageQueueTime != 0 && Math.abs(ApplicationLoader.mainInterfacePausedStageQueueTime - System.currentTimeMillis()) > 1000) {\n"
+            "                    if (statusSettingState != 1 && (lastStatusUpdateTime == 0 || Math.abs(System.currentTimeMillis() - lastStatusUpdateTime) >= 55000 || offlineSent)) {\n"
+            "                        statusSettingState = 1;\n"
+            "\n"
+            "                        if (statusRequest != 0) {\n"
+            "                            getConnectionsManager().cancelRequest(statusRequest, true);\n"
+            "                        }\n"
+            "\n"
+            "                        TL_account.updateStatus req = new TL_account.updateStatus();\n"
+            "                        req.offline = false;\n"
+            "                        statusRequest = getConnectionsManager().sendRequest(req, (response, error) -> {\n"
+            "                            if (error == null) {\n"
+            "                                lastStatusUpdateTime = System.currentTimeMillis();\n"
+            "                                offlineSent = false;\n"
+            "                                statusSettingState = 0;\n"
+            "                            } else {\n"
+            "                                if (lastStatusUpdateTime != 0) {\n"
+            "                                    lastStatusUpdateTime += 5000;\n"
+            "                                }\n"
+            "                            }\n"
+            "                            statusRequest = 0;\n"
+            "                        });\n"
+            "                    }\n"
+            "                }\n"
+            "            } else if ((pgHideOnline || (statusSettingState != 2 && !offlineSent && Math.abs(System.currentTimeMillis() - getConnectionsManager().getPauseTime()) >= 2000)) && (pgHideOnline ? (statusSettingState != 2 || !offlineSent) : true)) {\n"
+            "                if (pgHideOnline && offlineSent && statusSettingState == 2) {\n"
+            "                    // уже offline — ничего\n"
+            "                } else if (statusSettingState != 2 && !offlineSent || pgHideOnline && !offlineSent) {\n"
         )
-        if old not in mc:
-            die("не нашёл условие online-статуса")
-        mc = mc.replace(old, new, 1)
-        print("online condition: OK")
-    else:
-        print("online condition: уже есть")
+        # The else if rewrite is getting too messy. Simpler approach:
 
-    # 2) Жёсткий блок: перед offline=false
-    if "PG_GHOST_ONLINE_FORCE" not in mc:
-        old_off = "TL_account.updateStatus req = new TL_account.updateStatus();\n                        req.offline = false;"
-        new_off = (
-            "TL_account.updateStatus req = new TL_account.updateStatus();\n"
-            "                        // PG_GHOST_ONLINE_FORCE\n"
-            "                        if (org.telegram.messenger.PikmiGhost.shouldHideOnline(currentAccount)) {\n"
-            "                            req.offline = true;\n"
-            "                            statusSettingState = 2;\n"
-            "                        } else {\n"
-            "                            req.offline = false;\n"
-            "                        }"
-        )
-        if old_off in mc:
-            mc = mc.replace(old_off, new_off, 1)
-            print("online force: OK")
+        # Just replace the condition for online branch and change the offline else if condition
+        pass
+
+    # Simpler reliable patches:
+    # A) online condition
+    if "PG_GHOST_ONLINE" not in mc and "PG_GHOST_ONLINE_BLOCK" not in mc:
+        a = "if (!ignoreSetOnline && getConnectionsManager().getPauseTime() == 0 && ApplicationLoader.isScreenOn && !ApplicationLoader.mainInterfacePausedStageQueue) {"
+        b = "if (!ignoreSetOnline && !org.telegram.messenger.PikmiGhost.shouldHideOnline(currentAccount) && getConnectionsManager().getPauseTime() == 0 && ApplicationLoader.isScreenOn && !ApplicationLoader.mainInterfacePausedStageQueue) { // PG_GHOST_ONLINE"
+        if a not in mc:
+            die("online condition not found")
+        mc = mc.replace(a, b, 1)
+        print("online: block going online")
+    else:
+        print("online: condition already patched")
+
+    # B) Force offline while ghost: change else if offline branch condition
+    if "PG_GHOST_FORCE_OFFLINE" not in mc:
+        a = "} else if (statusSettingState != 2 && !offlineSent && Math.abs(System.currentTimeMillis() - getConnectionsManager().getPauseTime()) >= 2000) {"
+        b = "} else if (org.telegram.messenger.PikmiGhost.shouldHideOnline(currentAccount) && !offlineSent || statusSettingState != 2 && !offlineSent && Math.abs(System.currentTimeMillis() - getConnectionsManager().getPauseTime()) >= 2000) { // PG_GHOST_FORCE_OFFLINE"
+        if a not in mc:
+            print("WARN: offline branch not found")
         else:
-            # alternate whitespace
-            if "req.offline = false;" in mc:
-                mc = mc.replace(
-                    "req.offline = false;",
-                    "req.offline = org.telegram.messenger.PikmiGhost.shouldHideOnline(currentAccount); // PG_GHOST_ONLINE_FORCE inverted below\n"
-                    "                        if (org.telegram.messenger.PikmiGhost.shouldHideOnline(currentAccount)) { req.offline = true; } else { req.offline = false; }",
-                    1
-                )
-                print("online force: alternate OK")
-            else:
-                print("предупреждение: req.offline=false не найден")
+            mc = mc.replace(a, b, 1)
+            print("online: force offline while ghost")
     else:
-        print("online force: уже есть")
+        print("force offline: already")
 
-    # 3) markDialogAsRead
-    if "PG_GHOST_NOREAD" not in mc:
-        sig = (
-            "public void markDialogAsRead(long dialogId, int maxPositiveId, int maxNegativeId, "
-            "int maxDate, boolean popup, long threadId, int countDiff, boolean readNow, int scheduledCount) {"
-        )
-        if sig not in mc:
-            die("не нашёл markDialogAsRead")
-        mc = mc.replace(
-            sig,
-            sig + "\n"
-            "        // PG_GHOST_NOREAD\n"
-            "        if (org.telegram.messenger.PikmiGhost.shouldSkipRead(currentAccount, dialogId)) {\n"
-            "            return;\n"
-            "        }\n",
-            1
-        )
-        print("markDialogAsRead: OK")
-    else:
-        print("markDialogAsRead: уже есть")
-
-    # 4) markDialogAsReadNow
-    if "PG_GHOST_NOREAD_NOW" not in mc:
-        sig2 = "public void markDialogAsReadNow(long dialogId, long replyId) {"
-        if sig2 in mc:
+    # C) Never send offline=false under ghost (safety)
+    if "PG_GHOST_ONLINE_FORCE" not in mc:
+        if "req.offline = false;" in mc:
             mc = mc.replace(
-                sig2,
-                sig2 + "\n"
-                "        // PG_GHOST_NOREAD_NOW\n"
-                "        if (org.telegram.messenger.PikmiGhost.shouldSkipRead(currentAccount, dialogId)) {\n"
-                "            return;\n"
-                "        }\n",
+                "req.offline = false;",
+                "req.offline = org.telegram.messenger.PikmiGhost.shouldHideOnline(currentAccount); // will fix\n"
+                "                        if (org.telegram.messenger.PikmiGhost.shouldHideOnline(currentAccount)) { req.offline = true; statusSettingState = 2; } else { req.offline = false; } // PG_GHOST_ONLINE_FORCE",
                 1
             )
-            print("markDialogAsReadNow: OK")
+            print("online: hard block offline=false")
+        else:
+            print("WARN: req.offline=false not found")
+    else:
+        print("hard block: already")
 
-    # 5) completeReadTask — реальная отправка readHistory на сервер
+    # D) READ: ensure markDialogAsRead does NOT early-return (local UI), only completeReadTask blocks server
+    # Remove old early returns if present
+    for marker, block in [
+        ("PG_GHOST_NOREAD\n",
+         "        // PG_GHOST_NOREAD\n"
+         "        if (org.telegram.messenger.PikmiGhost.shouldSkipRead(currentAccount, dialogId)) {\n"
+         "            return;\n"
+         "        }\n"),
+        ("PG_GHOST_NOREAD_NOW\n",
+         "        // PG_GHOST_NOREAD_NOW\n"
+         "        if (org.telegram.messenger.PikmiGhost.shouldSkipRead(currentAccount, dialogId)) {\n"
+         "            return;\n"
+         "        }\n"),
+    ]:
+        if block in mc:
+            mc = mc.replace(block, "        // " + marker.strip() + " local read allowed; server blocked in completeReadTask\n")
+            print("removed early return:", marker.strip())
+
+    # completeReadTask - server block
     if "PG_GHOST_COMPLETE_READ" not in mc:
         sig3 = "private void completeReadTask(ReadTask task) {"
-        if sig3 in mc:
+        if sig3 not in mc:
+            print("WARN: completeReadTask not found")
+        else:
             mc = mc.replace(
                 sig3,
                 sig3 + "\n"
@@ -371,11 +414,11 @@ def main():
                 "        }\n",
                 1
             )
-            print("completeReadTask: OK")
-        else:
-            print("предупреждение: completeReadTask не найден")
+            print("completeReadTask: server read blocked")
+    else:
+        print("completeReadTask: already")
 
-    # 6) markMentionsAsRead
+    # markMentionsAsRead - server-side, block
     if "PG_GHOST_MENTIONS" not in mc:
         sig4 = "public void markMentionsAsRead(long dialogId, long topicId) {"
         if sig4 in mc:
@@ -388,7 +431,41 @@ def main():
                 "        }\n",
                 1
             )
-            print("markMentionsAsRead: OK")
+            print("markMentionsAsRead: blocked")
+
+    # E) sendTyping - block when hide online / silent
+    if "PG_GHOST_TYPING" not in mc:
+        sig_t = "public boolean sendTyping(long dialogId, long threadMsgId, int action, String emojicon, int classGuid) {"
+        if sig_t not in mc:
+            print("WARN: sendTyping not found")
+        else:
+            mc = mc.replace(
+                sig_t,
+                sig_t + "\n"
+                "        // PG_GHOST_TYPING\n"
+                "        if (org.telegram.messenger.PikmiGhost.shouldHideOnline(currentAccount)) {\n"
+                "            return false;\n"
+                "        }\n",
+                1
+            )
+            print("sendTyping: blocked under ghost")
+    else:
+        print("sendTyping: already")
+
+    # also the shorter overload
+    if "PG_GHOST_TYPING2" not in mc:
+        sig_t2 = "public boolean sendTyping(long dialogId, long threadMsgId, int action, int classGuid) {"
+        if sig_t2 in mc:
+            mc = mc.replace(
+                sig_t2,
+                sig_t2 + "\n"
+                "        // PG_GHOST_TYPING2\n"
+                "        if (org.telegram.messenger.PikmiGhost.shouldHideOnline(currentAccount)) {\n"
+                "            return false;\n"
+                "        }\n",
+                1
+            )
+            print("sendTyping overload: blocked")
 
     MC.write_text(mc, encoding="utf-8")
 
