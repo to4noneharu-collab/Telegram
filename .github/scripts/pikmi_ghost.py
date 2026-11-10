@@ -79,11 +79,11 @@ public class PikmiGhost {
         return isOfflineMode(account) || isSilentSend(account);
     }
 
-    /** Не читать сообщения в диалоге (ЛС, группы, каналы). */
+    /** Не читать сообщения в этом диалоге (группы/каналы). */
     public static boolean shouldSkipRead(int account, long dialogId) {
         if (!isNoReadGroups(account)) return false;
-        if (dialogId == 0) return false;
-        return true;
+        // личные чаты: dialogId > 0; группы/каналы: dialogId < 0
+        return dialogId < 0;
     }
 
     public static void showSettings(final Activity activity, final int account) {
@@ -113,14 +113,14 @@ public class PikmiGhost {
         root.addView(swSilent);
 
         final Switch swNoRead = new Switch(activity);
-        swNoRead.setText("Без автопрочтения\n(не читать сообщения в ЛС, группах и каналах)");
+        swNoRead.setText("Без прочтения в группах\n(не читать сообщения в группах/каналах)");
         swNoRead.setChecked(isNoReadGroups(account));
         root.addView(swNoRead);
 
         TextView hint = new TextView(activity);
         hint.setText("\nНастройки для аккаунта " + (account + 1) + ".\n"
                 + "Оффлайн и «тихие» блокируют отправку online-статуса на сервер.\n"
-                + "Без автопрочтения действует на личные чаты, группы и каналы.");
+                + "Без прочтения действует только на группы и каналы (не на личные чаты).");
         hint.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12);
         hint.setPadding(0, AndroidUtilities.dp(12), 0, 0);
         root.addView(hint);
