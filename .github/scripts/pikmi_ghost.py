@@ -1,15 +1,9 @@
 #!/usr/bin/env python3
-"""Pikmi Ghost / Offline mode.
+"""Pikmi Ghost / Offline mode — полноценный экран настроек.
 
-Настройки (на аккаунт):
-  - Режим оффлайна: всегда отправлять offline-статус
-  - Тихие сообщения: не выходить в online при активности/отправке
-  - Без прочтения в группах: не вызывать markDialogAsRead для групп/каналов
-
-Фикс фоновых уведомлений:
-  - принудительно pushService=true
-  - keepAliveService по возможности
-  - NotificationsService остаётся START_STICKY + перезапуск
+- Режим оффлайна / тихие сообщения: блокировка online-статуса (в т.ч. при отправке)
+- Без автопрочтения: ЛС + группы + каналы (markDialogAsRead, completeReadTask, mentions)
+- Фикс push в фоне
 
 Идемпотентен.
 """
@@ -18,26 +12,20 @@ import sys
 from pathlib import Path
 
 HELPER = Path("TMessagesProj/src/main/java/org/telegram/messenger/PikmiGhost.java")
+SETTINGS = Path("TMessagesProj/src/main/java/org/telegram/ui/PikmiGhostSettingsActivity.java")
 MC = Path("TMessagesProj/src/main/java/org/telegram/messenger/MessagesController.java")
 AL = Path("TMessagesProj/src/main/java/org/telegram/messenger/ApplicationLoader.java")
 NS = Path("TMessagesProj/src/main/java/org/telegram/messenger/NotificationsService.java")
 DA = Path("TMessagesProj/src/main/java/org/telegram/ui/DialogsActivity.java")
 
-JAVA = r'''package org.telegram.messenger;
+JAVA_HELPER = r'''package org.telegram.messenger;
 
-import android.app.Activity;
-import android.app.AlertDialog;
 import android.content.Context;
 import android.content.SharedPreferences;
-import android.util.TypedValue;
-import android.widget.LinearLayout;
-import android.widget.ScrollView;
-import android.widget.Switch;
-import android.widget.TextView;
-import android.widget.Toast;
 
 /**
- * Режим оффлайна / «призрак»: скрытие онлайна, без автопрочтения групп, тихая активность.
+ * Ghost / offline: скрытие онлайна, без автопрочтения, тихая активность.
+ * Настройки на каждый аккаунт.
  */
 public class PikmiGhost {
 
@@ -57,9 +45,14 @@ public class PikmiGhost {
         catch (Throwable t) { return false; }
     }
 
-    public static boolean isNoReadGroups(int account) {
+    public static boolean isNoRead(int account) {
         try { return prefs(account).getBoolean("no_read_groups", false); }
         catch (Throwable t) { return false; }
+    }
+
+    // совместимость со старым именем
+    public static boolean isNoReadGroups(int account) {
+        return isNoRead(account);
     }
 
     public static void setOfflineMode(int account, boolean v) {
@@ -70,71 +63,190 @@ public class PikmiGhost {
         prefs(account).edit().putBoolean("silent_send", v).apply();
     }
 
-    public static void setNoReadGroups(int account, boolean v) {
+    public static void setNoRead(int account, boolean v) {
         prefs(account).edit().putBoolean("no_read_groups", v).apply();
     }
 
-    /** Не показывать online (оффлайн-режим или тихая отправка). */
+    public static void setNoReadGroups(int account, boolean v) {
+        setNoRead(account, v);
+    }
+
+    /** Не показывать online. */
     public static boolean shouldHideOnline(int account) {
         return isOfflineMode(account) || isSilentSend(account);
     }
 
-    /** Не читать сообщения в диалоге (ЛС, группы, каналы). */
+    /** Не читать сообщения (ЛС, группы, каналы). */
     public static boolean shouldSkipRead(int account, long dialogId) {
-        if (!isNoReadGroups(account)) return false;
+        if (!isNoRead(account)) return false;
         if (dialogId == 0) return false;
         return true;
     }
+}
+'''
 
-    public static void showSettings(final Activity activity, final int account) {
-        if (activity == null) return;
+JAVA_SETTINGS = r'''package org.telegram.ui;
 
-        ScrollView scroll = new ScrollView(activity);
-        LinearLayout root = new LinearLayout(activity);
-        root.setOrientation(LinearLayout.VERTICAL);
-        int pad = AndroidUtilities.dp(20);
-        root.setPadding(pad, pad, pad, pad);
-        scroll.addView(root);
+import android.content.Context;
+import android.view.View;
+import android.view.ViewGroup;
+import android.widget.FrameLayout;
 
-        TextView title = new TextView(activity);
-        title.setText("Pikmi: Оффлайн / Ghost");
-        title.setTextSize(TypedValue.COMPLEX_UNIT_SP, 18);
-        title.setPadding(0, 0, 0, AndroidUtilities.dp(12));
-        root.addView(title);
+import androidx.recyclerview.widget.LinearLayoutManager;
+import androidx.recyclerview.widget.RecyclerView;
 
-        final Switch swOffline = new Switch(activity);
-        swOffline.setText("Режим оффлайна\n(в сети не показываться, пока открыт Telegram)");
-        swOffline.setChecked(isOfflineMode(account));
-        root.addView(swOffline);
+import org.telegram.messenger.AndroidUtilities;
+import org.telegram.messenger.PikmiGhost;
+import org.telegram.messenger.R;
+import org.telegram.ui.ActionBar.ActionBar;
+import org.telegram.ui.ActionBar.BaseFragment;
+import org.telegram.ui.ActionBar.Theme;
+import org.telegram.ui.Cells.HeaderCell;
+import org.telegram.ui.Cells.ShadowSectionCell;
+import org.telegram.ui.Cells.TextCheckCell;
+import org.telegram.ui.Cells.TextInfoPrivacyCell;
+import org.telegram.ui.Components.LayoutHelper;
+import org.telegram.ui.Components.RecyclerListView;
 
-        final Switch swSilent = new Switch(activity);
-        swSilent.setText("Тихие сообщения\n(не выходить в online при отправке и активности)");
-        swSilent.setChecked(isSilentSend(account));
-        root.addView(swSilent);
+public class PikmiGhostSettingsActivity extends BaseFragment {
 
-        final Switch swNoRead = new Switch(activity);
-        swNoRead.setText("Без автопрочтения\n(не читать сообщения в ЛС, группах и каналах)");
-        swNoRead.setChecked(isNoReadGroups(account));
-        root.addView(swNoRead);
+    private RecyclerListView listView;
+    private ListAdapter adapter;
 
-        TextView hint = new TextView(activity);
-        hint.setText("\nНастройки для аккаунта " + (account + 1) + ".\n"
-                + "Оффлайн и «тихие» блокируют отправку online-статуса на сервер.\n"
-                + "Без автопрочтения действует на личные чаты, группы и каналы.");
-        hint.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12);
-        hint.setPadding(0, AndroidUtilities.dp(12), 0, 0);
-        root.addView(hint);
+    private int rowCount;
+    private int headerRow;
+    private int offlineRow;
+    private int silentRow;
+    private int noReadRow;
+    private int sectionRow;
+    private int infoRow;
 
-        new AlertDialog.Builder(activity)
-                .setView(scroll)
-                .setPositiveButton("Сохранить", (d, w) -> {
-                    setOfflineMode(account, swOffline.isChecked());
-                    setSilentSend(account, swSilent.isChecked());
-                    setNoReadGroups(account, swNoRead.isChecked());
-                    Toast.makeText(activity, "Сохранено", Toast.LENGTH_SHORT).show();
-                })
-                .setNegativeButton("Отмена", null)
-                .show();
+    @Override
+    public boolean onFragmentCreate() {
+        super.onFragmentCreate();
+        rowCount = 0;
+        headerRow = rowCount++;
+        offlineRow = rowCount++;
+        silentRow = rowCount++;
+        noReadRow = rowCount++;
+        sectionRow = rowCount++;
+        infoRow = rowCount++;
+        return true;
+    }
+
+    @Override
+    public View createView(Context context) {
+        actionBar.setBackButtonImage(R.drawable.ic_ab_back);
+        actionBar.setAllowOverlayTitle(true);
+        actionBar.setTitle("Pikmi: Оффлайн / Ghost");
+        actionBar.setActionBarMenuOnItemClick(new ActionBar.ActionBarMenuOnItemClick() {
+            @Override
+            public void onItemClick(int id) {
+                if (id == -1) finishFragment();
+            }
+        });
+
+        fragmentView = new FrameLayout(context);
+        FrameLayout frame = (FrameLayout) fragmentView;
+        frame.setBackgroundColor(Theme.getColor(Theme.key_windowBackgroundGray));
+
+        listView = new RecyclerListView(context);
+        listView.setLayoutManager(new LinearLayoutManager(context, LinearLayoutManager.VERTICAL, false));
+        listView.setVerticalScrollBarEnabled(false);
+        frame.addView(listView, LayoutHelper.createFrame(LayoutHelper.MATCH_PARENT, LayoutHelper.MATCH_PARENT));
+        adapter = new ListAdapter(context);
+        listView.setAdapter(adapter);
+
+        listView.setOnItemClickListener((view, position) -> {
+            if (position == offlineRow) {
+                boolean next = !PikmiGhost.isOfflineMode(currentAccount);
+                PikmiGhost.setOfflineMode(currentAccount, next);
+                if (view instanceof TextCheckCell) ((TextCheckCell) view).setChecked(next);
+            } else if (position == silentRow) {
+                boolean next = !PikmiGhost.isSilentSend(currentAccount);
+                PikmiGhost.setSilentSend(currentAccount, next);
+                if (view instanceof TextCheckCell) ((TextCheckCell) view).setChecked(next);
+            } else if (position == noReadRow) {
+                boolean next = !PikmiGhost.isNoRead(currentAccount);
+                PikmiGhost.setNoRead(currentAccount, next);
+                if (view instanceof TextCheckCell) ((TextCheckCell) view).setChecked(next);
+            }
+        });
+
+        return fragmentView;
+    }
+
+    private class ListAdapter extends RecyclerListView.SelectionAdapter {
+        private final Context mContext;
+
+        ListAdapter(Context context) { mContext = context; }
+
+        @Override
+        public boolean isEnabled(RecyclerView.ViewHolder holder) {
+            int pos = holder.getAdapterPosition();
+            return pos == offlineRow || pos == silentRow || pos == noReadRow;
+        }
+
+        @Override
+        public int getItemCount() { return rowCount; }
+
+        @Override
+        public int getItemViewType(int position) {
+            if (position == headerRow) return 0;
+            if (position == offlineRow || position == silentRow || position == noReadRow) return 1;
+            if (position == sectionRow) return 2;
+            return 3;
+        }
+
+        @Override
+        public RecyclerView.ViewHolder onCreateViewHolder(ViewGroup parent, int viewType) {
+            View view;
+            switch (viewType) {
+                case 0:
+                    view = new HeaderCell(mContext);
+                    view.setBackgroundColor(Theme.getColor(Theme.key_windowBackgroundWhite));
+                    break;
+                case 1:
+                    view = new TextCheckCell(mContext);
+                    view.setBackgroundColor(Theme.getColor(Theme.key_windowBackgroundWhite));
+                    break;
+                case 2:
+                    view = new ShadowSectionCell(mContext);
+                    break;
+                default:
+                    view = new TextInfoPrivacyCell(mContext);
+                    break;
+            }
+            return new RecyclerListView.Holder(view);
+        }
+
+        @Override
+        public void onBindViewHolder(RecyclerView.ViewHolder holder, int position) {
+            switch (holder.getItemViewType()) {
+                case 0:
+                    ((HeaderCell) holder.itemView).setText("Функции (аккаунт " + (currentAccount + 1) + ")");
+                    break;
+                case 1: {
+                    TextCheckCell cell = (TextCheckCell) holder.itemView;
+                    if (position == offlineRow) {
+                        cell.setTextAndValueAndCheck("Режим оффлайна", "Не показывать online, пока открыт Telegram", PikmiGhost.isOfflineMode(currentAccount), true, true);
+                    } else if (position == silentRow) {
+                        cell.setTextAndValueAndCheck("Тихие сообщения", "Не выходить в online при отправке и активности", PikmiGhost.isSilentSend(currentAccount), true, true);
+                    } else if (position == noReadRow) {
+                        cell.setTextAndValueAndCheck("Без автопрочтения", "Не читать в ЛС, группах и каналах", PikmiGhost.isNoRead(currentAccount), true, false);
+                    }
+                    break;
+                }
+                case 3: {
+                    TextInfoPrivacyCell cell = (TextInfoPrivacyCell) holder.itemView;
+                    cell.setText("Оффлайн и «тихие сообщения» блокируют отправку online-статуса на сервер, в том числе при написании.\n\n"
+                            + "Без автопрочтения отключает чтение входящих во всех типах чатов: сервер не получает «прочитано».\n\n"
+                            + "Настройки сохраняются отдельно для каждого аккаунта.");
+                    cell.setBackground(Theme.getThemedDrawableByKey(mContext, R.drawable.greydivider, Theme.key_windowBackgroundGrayShadow));
+                    break;
+                }
+            }
+        }
     }
 }
 '''
@@ -150,14 +262,18 @@ def die(msg, hint=None):
 
 def main():
     HELPER.parent.mkdir(parents=True, exist_ok=True)
-    HELPER.write_text(JAVA, encoding="utf-8")
+    HELPER.write_text(JAVA_HELPER, encoding="utf-8")
     print("PikmiGhost.java: создан")
 
-    # --- MessagesController: block online status ---
+    SETTINGS.parent.mkdir(parents=True, exist_ok=True)
+    SETTINGS.write_text(JAVA_SETTINGS, encoding="utf-8")
+    print("PikmiGhostSettingsActivity.java: создан")
+
     if not MC.exists():
         die("не найден MessagesController.java")
     mc = MC.read_text(encoding="utf-8")
 
+    # 1) Блок online в updateTimerProc
     if "PG_GHOST_ONLINE" not in mc:
         old = (
             "if (!ignoreSetOnline && getConnectionsManager().getPauseTime() == 0 && "
@@ -169,36 +285,65 @@ def main():
             "ApplicationLoader.isScreenOn && !ApplicationLoader.mainInterfacePausedStageQueue) { // PG_GHOST_ONLINE"
         )
         if old not in mc:
-            die("MessagesController: не нашёл условие online-статуса",
-                __import__("subprocess").run(
-                    "grep -n 'ignoreSetOnline && getConnectionsManager' %s" % MC,
-                    shell=True, capture_output=True, text=True).stdout)
+            die("не нашёл условие online-статуса")
         mc = mc.replace(old, new, 1)
-        print("online-статус: хук добавлен")
+        print("online condition: OK")
     else:
-        print("online-статус: уже есть")
+        print("online condition: уже есть")
 
-    # --- markDialogAsRead ---
+    # 2) Жёсткий блок: перед offline=false
+    if "PG_GHOST_ONLINE_FORCE" not in mc:
+        old_off = "TL_account.updateStatus req = new TL_account.updateStatus();\n                        req.offline = false;"
+        new_off = (
+            "TL_account.updateStatus req = new TL_account.updateStatus();\n"
+            "                        // PG_GHOST_ONLINE_FORCE\n"
+            "                        if (org.telegram.messenger.PikmiGhost.shouldHideOnline(currentAccount)) {\n"
+            "                            req.offline = true;\n"
+            "                            statusSettingState = 2;\n"
+            "                        } else {\n"
+            "                            req.offline = false;\n"
+            "                        }"
+        )
+        if old_off in mc:
+            mc = mc.replace(old_off, new_off, 1)
+            print("online force: OK")
+        else:
+            # alternate whitespace
+            if "req.offline = false;" in mc:
+                mc = mc.replace(
+                    "req.offline = false;",
+                    "req.offline = org.telegram.messenger.PikmiGhost.shouldHideOnline(currentAccount); // PG_GHOST_ONLINE_FORCE inverted below\n"
+                    "                        if (org.telegram.messenger.PikmiGhost.shouldHideOnline(currentAccount)) { req.offline = true; } else { req.offline = false; }",
+                    1
+                )
+                print("online force: alternate OK")
+            else:
+                print("предупреждение: req.offline=false не найден")
+    else:
+        print("online force: уже есть")
+
+    # 3) markDialogAsRead
     if "PG_GHOST_NOREAD" not in mc:
         sig = (
             "public void markDialogAsRead(long dialogId, int maxPositiveId, int maxNegativeId, "
             "int maxDate, boolean popup, long threadId, int countDiff, boolean readNow, int scheduledCount) {"
         )
         if sig not in mc:
-            die("MessagesController: не нашёл markDialogAsRead")
-        insert = (
+            die("не нашёл markDialogAsRead")
+        mc = mc.replace(
+            sig,
             sig + "\n"
             "        // PG_GHOST_NOREAD\n"
             "        if (org.telegram.messenger.PikmiGhost.shouldSkipRead(currentAccount, dialogId)) {\n"
             "            return;\n"
-            "        }\n"
+            "        }\n",
+            1
         )
-        mc = mc.replace(sig, insert, 1)
-        print("markDialogAsRead: хук добавлен")
+        print("markDialogAsRead: OK")
     else:
         print("markDialogAsRead: уже есть")
 
-    # markDialogAsReadNow
+    # 4) markDialogAsReadNow
     if "PG_GHOST_NOREAD_NOW" not in mc:
         sig2 = "public void markDialogAsReadNow(long dialogId, long replyId) {"
         if sig2 in mc:
@@ -211,54 +356,69 @@ def main():
                 "        }\n",
                 1
             )
-            print("markDialogAsReadNow: хук добавлен")
+            print("markDialogAsReadNow: OK")
+
+    # 5) completeReadTask — реальная отправка readHistory на сервер
+    if "PG_GHOST_COMPLETE_READ" not in mc:
+        sig3 = "private void completeReadTask(ReadTask task) {"
+        if sig3 in mc:
+            mc = mc.replace(
+                sig3,
+                sig3 + "\n"
+                "        // PG_GHOST_COMPLETE_READ\n"
+                "        if (task != null && org.telegram.messenger.PikmiGhost.shouldSkipRead(currentAccount, task.dialogId)) {\n"
+                "            return;\n"
+                "        }\n",
+                1
+            )
+            print("completeReadTask: OK")
         else:
-            print("markDialogAsReadNow: не найден (пропуск)")
+            print("предупреждение: completeReadTask не найден")
+
+    # 6) markMentionsAsRead
+    if "PG_GHOST_MENTIONS" not in mc:
+        sig4 = "public void markMentionsAsRead(long dialogId, long topicId) {"
+        if sig4 in mc:
+            mc = mc.replace(
+                sig4,
+                sig4 + "\n"
+                "        // PG_GHOST_MENTIONS\n"
+                "        if (org.telegram.messenger.PikmiGhost.shouldSkipRead(currentAccount, dialogId)) {\n"
+                "            return;\n"
+                "        }\n",
+                1
+            )
+            print("markMentionsAsRead: OK")
 
     MC.write_text(mc, encoding="utf-8")
 
-    # --- Фоновые уведомления: pushService + keepAlive ---
+    # push fixes (same as before)
     if AL.exists():
         al = AL.read_text(encoding="utf-8")
-        if "PG_GHOST_PUSH" not in al:
-            # После postInit / loadConfig — включить push
-            if "applicationInited = true;" in al:
-                al = al.replace(
-                    "applicationInited = true;",
-                    "applicationInited = true;\n"
-                    "        try { // PG_GHOST_PUSH\n"
-                    "            android.content.SharedPreferences _pgN = MessagesController.getGlobalNotificationsSettings();\n"
-                    "            if (!_pgN.getBoolean(\"pushService\", true)) {\n"
-                    "                _pgN.edit().putBoolean(\"pushService\", true).apply();\n"
-                    "            }\n"
-                    "            AndroidUtilities.runOnUIThread(() -> {\n"
-                    "                try { ApplicationLoader.startPushService(); } catch (Throwable ignore) {}\n"
-                    "            }, 1500);\n"
-                    "        } catch (Throwable ignore) {}\n",
-                    1
-                )
-                AL.write_text(al, encoding="utf-8")
-                print("push fix: ApplicationLoader")
-            else:
-                print("предупреждение: applicationInited не найден")
+        if "PG_GHOST_PUSH" not in al and "applicationInited = true;" in al:
+            al = al.replace(
+                "applicationInited = true;",
+                "applicationInited = true;\n"
+                "        try { // PG_GHOST_PUSH\n"
+                "            android.content.SharedPreferences _pgN = MessagesController.getGlobalNotificationsSettings();\n"
+                "            if (!_pgN.getBoolean(\"pushService\", true)) {\n"
+                "                _pgN.edit().putBoolean(\"pushService\", true).apply();\n"
+                "            }\n"
+                "            AndroidUtilities.runOnUIThread(() -> {\n"
+                "                try { ApplicationLoader.startPushService(); } catch (Throwable ignore) {}\n"
+                "            }, 1500);\n"
+                "        } catch (Throwable ignore) {}\n",
+                1
+            )
+            AL.write_text(al, encoding="utf-8")
+            print("push: ApplicationLoader")
         else:
-            print("push fix: уже есть")
-    else:
-        print("ApplicationLoader не найден")
+            print("push: ApplicationLoader skip/exists")
 
-    # NotificationsService — усилить sticky + перезапуск
     if NS.exists():
         ns = NS.read_text(encoding="utf-8")
         if "PG_GHOST_NOTIFY_SVC" not in ns:
-            if "return START_STICKY;" in ns:
-                ns = ns.replace(
-                    "return START_STICKY;",
-                    "return START_STICKY; // PG_GHOST_NOTIFY_SVC",
-                    1
-                )
-            # onDestroy уже шлёт broadcast — добавим startService на новый API
-            if "public void onDestroy()" in ns and "startForegroundService" not in ns:
-                old_destroy = '''    public void onDestroy() {
+            old_destroy = '''    public void onDestroy() {
         super.onDestroy();
         SharedPreferences preferences = MessagesController.getGlobalNotificationsSettings();
         if (preferences.getBoolean("pushService", true)) {
@@ -267,7 +427,7 @@ def main():
             sendBroadcast(intent);
         }
     }'''
-                new_destroy = '''    public void onDestroy() {
+            new_destroy = '''    public void onDestroy() {
         super.onDestroy();
         // PG_GHOST_NOTIFY_SVC
         SharedPreferences preferences = MessagesController.getGlobalNotificationsSettings();
@@ -278,97 +438,72 @@ def main():
                 sendBroadcast(intent);
             } catch (Throwable ignore) {}
             try {
-                Intent svc = new Intent(this, NotificationsService.class);
-                if (android.os.Build.VERSION.SDK_INT >= 26) {
-                    // обычный startService; foreground настраивается системой Telegram при необходимости
-                    startService(svc);
-                } else {
-                    startService(svc);
-                }
+                startService(new Intent(this, NotificationsService.class));
             } catch (Throwable ignore) {}
         }
     }'''
-                if old_destroy in ns:
-                    ns = ns.replace(old_destroy, new_destroy, 1)
-                    print("NotificationsService: onDestroy усилен")
-                else:
-                    print("NotificationsService: onDestroy не совпал (частично OK)")
-            NS.write_text(ns, encoding="utf-8")
-        else:
-            print("NotificationsService: уже пропатчен")
+            if old_destroy in ns:
+                ns = ns.replace(old_destroy, new_destroy, 1)
+                NS.write_text(ns, encoding="utf-8")
+                print("NotificationsService: OK")
+            else:
+                print("NotificationsService: anchor miss")
 
-    # keepAliveService default true при загрузке prefs
     mc2 = MC.read_text(encoding="utf-8")
     if "PG_GHOST_KEEPALIVE" not in mc2:
         old_ka = 'keepAliveService = mainPreferences.getBoolean("keepAliveService", false);'
-        new_ka = 'keepAliveService = mainPreferences.getBoolean("keepAliveService", true); // PG_GHOST_KEEPALIVE'
         if old_ka in mc2:
-            mc2 = mc2.replace(old_ka, new_ka, 1)
-            MC.write_text(mc2, encoding="utf-8")
-            print("keepAliveService: default true")
-        else:
-            print("keepAliveService: строка не найдена")
-    else:
-        print("keepAliveService: уже есть")
+            MC.write_text(mc2.replace(old_ka, 'keepAliveService = mainPreferences.getBoolean("keepAliveService", true); // PG_GHOST_KEEPALIVE', 1), encoding="utf-8")
+            print("keepAlive: OK")
 
-    # --- Меню ---
+    # Menu → full fragment
     if not DA.exists():
         die("не найден DialogsActivity.java")
     da = DA.read_text(encoding="utf-8")
-    if "PG_GHOST_MENU" not in da:
-        inserted = False
-        if "PG_AI_MENU" in da:
-            # после AI пункта
-            ai_block = (
-                "        io.add(R.drawable.msg_edit, \"PikmiGram: AI (Groq)\", () -> { // PG_AI_MENU\n"
-                "            presentFragment(new org.telegram.ui.PikmiAISettingsActivity());\n"
-                "        });"
-            )
-            if ai_block in da:
-                da = da.replace(
-                    ai_block,
-                    ai_block + "\n"
-                    "        io.add(R.drawable.msg_secret, \"PikmiGram: Оффлайн / Ghost\", () -> { // PG_GHOST_MENU\n"
-                    "            org.telegram.messenger.PikmiGhost.showSettings(getParentActivity(), currentAccount);\n"
-                    "        });",
-                    1
-                )
-                inserted = True
-        if not inserted and "PikmiUpdater.check(getParentActivity(), true);" in da:
+    if "PG_GHOST_MENU" in da:
+        # upgrade showSettings dialog → fragment
+        if "PikmiGhost.showSettings" in da:
             da = da.replace(
-                "org.telegram.messenger.PikmiUpdater.check(getParentActivity(), true);\n        });",
-                "org.telegram.messenger.PikmiUpdater.check(getParentActivity(), true);\n        });\n"
+                "org.telegram.messenger.PikmiGhost.showSettings(getParentActivity(), currentAccount);",
+                "presentFragment(new org.telegram.ui.PikmiGhostSettingsActivity());"
+            )
+            DA.write_text(da, encoding="utf-8")
+            print("меню: обновлено на Fragment")
+        else:
+            print("меню: уже Fragment")
+    else:
+        inserted = False
+        if "PG_AI_MENU" in da and "PikmiAISettingsActivity" in da:
+            da = da.replace(
+                "presentFragment(new org.telegram.ui.PikmiAISettingsActivity());\n        });",
+                "presentFragment(new org.telegram.ui.PikmiAISettingsActivity());\n        });\n"
                 "        io.add(R.drawable.msg_secret, \"PikmiGram: Оффлайн / Ghost\", () -> { // PG_GHOST_MENU\n"
-                "            org.telegram.messenger.PikmiGhost.showSettings(getParentActivity(), currentAccount);\n"
+                "            presentFragment(new org.telegram.ui.PikmiGhostSettingsActivity());\n"
                 "        });",
                 1
             )
-            inserted = True
+            inserted = "PG_GHOST_MENU" in da
         if not inserted:
             rx = re.compile(
                 r"(io\.add\(R\.drawable\.outline_groups_24, getString\(R\.string\.NewGroup\), \(\) -> \{\s*"
                 r"Bundle args = new Bundle\(\);\s*"
                 r"presentFragment\(new GroupCreateActivity\(args\)\);\s*\}\);)"
             )
-            if rx.search(da):
-                da = rx.sub(
-                    lambda m: m.group(1) + "\n"
-                    "        io.addGap();\n"
-                    "        io.add(R.drawable.msg_secret, \"PikmiGram: Оффлайн / Ghost\", () -> { // PG_GHOST_MENU\n"
-                    "            org.telegram.messenger.PikmiGhost.showSettings(getParentActivity(), currentAccount);\n"
-                    "        });",
-                    da,
-                    count=1
-                )
-                inserted = True
-        if not inserted:
-            die("DialogsActivity: не удалось вставить пункт меню")
+            if not rx.search(da):
+                die("не нашёл якорь меню")
+            da = rx.sub(
+                lambda m: m.group(1) + "\n"
+                "        io.addGap();\n"
+                "        io.add(R.drawable.msg_secret, \"PikmiGram: Оффлайн / Ghost\", () -> { // PG_GHOST_MENU\n"
+                "            presentFragment(new org.telegram.ui.PikmiGhostSettingsActivity());\n"
+                "        });",
+                da,
+                count=1
+            )
         DA.write_text(da, encoding="utf-8")
-        print("меню Ghost: добавлено")
-    else:
-        print("меню Ghost: уже есть")
+        print("меню: добавлено")
 
-    print("Готово: Pikmi Ghost (оффлайн / тихие / без прочтения групп + push fix)")
+    print("Готово: Ghost — полный экран + жёсткая блокировка online/read")
 
 
 if __name__ == "__main__":
