@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
     inputs:
       skip:
-        description: 'Отключить функции для поиска причины вылета (через запятую): accounts (всё про аккаунты), accjava, accnative, updater, appwide, title, locale, screens, silentshot, chatsmenu, cleanupmenu, savemedia, forwardasown, timeseconds, ai, noforwards, noforwardschan, equalizer, pages'
+        description: 'Отключить функции для поиска причины вылета (через запятую): accounts (всё про аккаунты), accjava, accnative, updater, appwide, title, locale, screens, silentshot, chatsmenu, cleanupmenu, savemedia, forwardasown, timeseconds, ai, ghost, noforwards, noforwardschan, equalizer, pages'
         required: false
         default: ''
       account_limit:
@@ -133,6 +133,10 @@ jobs:
       - name: Pikmi AI (Groq rewrite + settings per account)
         if: ${{ !contains(github.event.inputs.skip, 'ai') }}
         run: python3 .github/scripts/pikmi_ai.py
+
+      - name: Pikmi Ghost offline mode (hide online, no group read, push fix)
+        if: ${{ !contains(github.event.inputs.skip, 'ghost') }}
+        run: python3 .github/scripts/pikmi_ghost.py
 
       - uses: actions/setup-java@v4
         with:
