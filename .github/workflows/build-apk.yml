@@ -138,7 +138,7 @@ jobs:
         if: ${{ !contains(github.event.inputs.skip, 'ghost') }}
         run: python3 .github/scripts/pikmi_ghost.py
 
-      - name: Pikmi Mafia settings menu
+      - name: Pikmi Mafia module
         if: ${{ !contains(github.event.inputs.skip, 'mafia') }}
         run: python3 .github/scripts/pikmi_mafia.py
 
