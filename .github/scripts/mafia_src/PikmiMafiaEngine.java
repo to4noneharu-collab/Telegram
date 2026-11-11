@@ -785,30 +785,35 @@ public class PikmiMafiaEngine {
     private static String btnText(TL_keyboard.KeyboardButtonProto b) {
         try {
             if (b == null) return "";
-            try {
-                String s = b.getText();
-                if (s != null && !s.isEmpty()) return s;
-            } catch (Throwable ignore) {}
-            if (b instanceof TL_keyboard.KeyboardInlineButton) {
-                String s = ((TL_keyboard.KeyboardInlineButton) b).text;
-                return s == null ? "" : s;
-            }
-            return "";
+            String s = b.getText();
+            return s == null ? "" : s;
         } catch (Throwable e) { return ""; }
     }
 
     private static byte[] btnData(TL_keyboard.KeyboardButtonProto b) {
         try {
             if (b == null) return null;
-            if (!TLKeyboardHelper.isType(b, TL_keyboard.TL_inlineButtonTypeCallback.class)) return null;
-            return b.getData();
+            // KeyboardButtonProto.getData() сам проверяет TL_inlineButtonTypeCallback
+            byte[] d = b.getData();
+            return d;
         } catch (Throwable e) { return null; }
     }
 
     private static String btnUrl(TL_keyboard.KeyboardButtonProto b) {
         try {
-            TL_keyboard.TL_inlineButtonTypeUrl u = TLKeyboardHelper.getType(b, TL_keyboard.TL_inlineButtonTypeUrl.class);
-            return u != null ? u.url : null;
+            if (b == null) return null;
+            TL_keyboard.ButtonTypeProto t = b.getType();
+            if (t instanceof TL_keyboard.TL_inlineButtonTypeUrl) {
+                return ((TL_keyboard.TL_inlineButtonTypeUrl) t).url;
+            }
+            if (t instanceof TL_keyboard.TL_inlineButtonTypeUrlAuth) {
+                return ((TL_keyboard.TL_inlineButtonTypeUrlAuth) t).url;
+            }
+            if (t instanceof TL_keyboard.TL_inlineButtonTypeWebView) {
+                return ((TL_keyboard.TL_inlineButtonTypeWebView) t).url;
+            }
+            // fallback через deprecated getUrl()
+            return b.getUrl();
         } catch (Throwable e) { return null; }
     }
 
