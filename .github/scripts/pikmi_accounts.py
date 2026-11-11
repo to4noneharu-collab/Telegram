@@ -69,7 +69,9 @@ orig_def, orig_max = int(m_def.group(1)), int(m_max.group(1))
 if RAW.isdigit():
     want = max(3, min(32, int(RAW)))
 else:
-    want = max(orig_max, native_capacity or orig_max)   # столько, сколько поддерживает код
+    # По умолчанию поднимаем до 12 (с расширением native), чтобы >5 аккаунтов не роняло приложение
+    base = max(orig_max, native_capacity or orig_max)
+    want = max(base, 12)
 new_max = max(orig_max, want)
 new_def = min(max(orig_def, want), new_max)
 print("Было: DEFAULT=%d, MAX=%d. Станет: DEFAULT=%d, MAX=%d (нативных экземпляров сейчас: %s)" % (
