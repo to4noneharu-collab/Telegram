@@ -5,12 +5,18 @@ import android.os.Looper;
 import android.text.TextUtils;
 import org.telegram.tgnet.ConnectionsManager;
 import org.telegram.tgnet.TLRPC;
+import org.telegram.tgnet.tl.TL_keyboard;
 import java.util.ArrayList;
 import java.util.Locale;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
+/**
+ * Движок Мафии.
+ * Роли и активные ночные кнопки хранятся здесь и показываются только в меню настроек.
+ * В лог-чат ничего не спамим (только FileLog).
+ */
 public class PikmiMafiaEngine {
     private static PikmiMafiaEngine Instance;
     private static final Handler main = new Handler(Looper.getMainLooper());
@@ -21,40 +27,203 @@ public class PikmiMafiaEngine {
     private final ConcurrentHashMap<String, Long> done = new ConcurrentHashMap<>();
     private final ConcurrentHashMap<Integer, String> accRoles = new ConcurrentHashMap<>();
     private final ConcurrentHashMap<Integer, AccStat> status = new ConcurrentHashMap<>();
+    /** Последнее сообщение бота с inline-кнопками (для меню «Активные роли»). */
+    private final ConcurrentHashMap<Integer, MessageObject> lastPrompt = new ConcurrentHashMap<>();
     private final ArrayList<RoleEntry> roles = new ArrayList<>();
     private final Object rolesLock = new Object();
     private volatile boolean gameOn;
     private volatile long gameSince, actAt;
-    private Runnable nightWarn, nightEnd, voteRun;
+    private Runnable nightWarn, nightEnd, voteRun, rebindRun;
+    private volatile Runnable uiRefresh;
+    private volatile long lastEnsureAt;
 
-    static class AccStat { boolean dead, blocked, killed; String why = ""; }
-    static class RoleEntry { String name, role; boolean own, dead; }
+    public static class AccStat {
+        public boolean dead, blocked, killed;
+        public String why = "";
+    }
+
+    public static class RoleEntry {
+        public String name, role;
+        public boolean own, dead;
+    }
+
+    public static class ActiveAcc {
+        public int account;
+        public String label;
+        public String role;
+        public boolean dead, blocked;
+        public String why;
+        public MessageObject prompt; // last bot msg with buttons
+        public ArrayList<String> buttons = new ArrayList<>();
+    }
 
     public static synchronized PikmiMafiaEngine getInstance() {
         if (Instance == null) Instance = new PikmiMafiaEngine();
         return Instance;
     }
 
+    /** UI подписывается, чтобы обновлять список ролей/активных. */
+    public void setUiRefresh(Runnable r) { uiRefresh = r; }
+
+    private void notifyUi() {
+        final Runnable r = uiRefresh;
+        if (r == null) return;
+        try {
+            main.post(() -> {
+                try { r.run(); } catch (Throwable ignore) {}
+            });
+        } catch (Throwable ignore) {}
+    }
+
+    /**
+     * Подписка на didReceiveNewMessages для всех аккаунтов.
+     * Безопасно вызывать многократно (фон / возврат в приложение / KeepAlive).
+     * Ошибки одного аккаунта не снимают подписку и не роняют процесс.
+     */
     public void ensureObservers() {
-        for (int a = 0; a < UserConfig.MAX_ACCOUNT_COUNT; a++) {
+        lastEnsureAt = System.currentTimeMillis();
+        int max = 5;
+        try { max = Math.max(1, Math.min(UserConfig.MAX_ACCOUNT_COUNT, 32)); } catch (Throwable ignore) {}
+        for (int a = 0; a < max; a++) {
             final int account = a;
+            try {
+                if (!UserConfig.getInstance(account).isClientActivated()) {
+                    observers.remove(account);
+                    continue;
+                }
+            } catch (Throwable ignore) {
+                continue;
+            }
             if (observers.putIfAbsent(account, Boolean.TRUE) != null) continue;
             try {
                 NotificationCenter.getInstance(account).addObserver((id, account2, args) -> {
-                    if (id != NotificationCenter.didReceiveNewMessages || !PikmiMafia.isEnabled()) return;
                     try {
+                        if (id != NotificationCenter.didReceiveNewMessages) return;
+                        if (!PikmiMafia.isEnabled()) return;
                         if (args == null || args.length < 2) return;
+                        // isCache — пропускаем кэш, чтобы не дублировать
                         if (args.length > 2 && args[2] instanceof Boolean && (Boolean) args[2]) return;
-                        ArrayList<MessageObject> messages = (ArrayList<MessageObject>) args[1];
-                        if (messages == null) return;
-                        for (MessageObject mo : messages) {
-                            if (mo != null && mo.messageOwner != null && !mo.isOut()) onMessage(account, mo);
+                        Object raw = args[1];
+                        if (!(raw instanceof ArrayList)) return;
+                        ArrayList<?> messages = (ArrayList<?>) raw;
+                        for (Object o : messages) {
+                            if (!(o instanceof MessageObject)) continue;
+                            MessageObject mo = (MessageObject) o;
+                            if (mo.messageOwner == null || mo.isOut()) continue;
+                            try {
+                                onMessage(account, mo);
+                            } catch (Throwable e) {
+                                FileLog.e(e);
+                            }
                         }
-                    } catch (Throwable e) { FileLog.e(e); }
+                    } catch (Throwable e) {
+                        // никогда не пробрасываем — иначе падает NotificationCenter в фоне
+                        FileLog.e(e);
+                    }
                 }, NotificationCenter.didReceiveNewMessages);
-            } catch (Throwable e) { FileLog.e(e); observers.remove(account); }
+            } catch (Throwable e) {
+                FileLog.e(e);
+                // не remove — при следующем ensureObservers попробуем снова через сброс
+                observers.remove(account);
+            }
         }
+        scheduleRebind();
     }
+
+    /** Периодически переподписываемся, пока модуль включён (защита от смерти процесса/GC). */
+    private void scheduleRebind() {
+        if (rebindRun != null) return;
+        rebindRun = () -> {
+            rebindRun = null;
+            try {
+                if (!PikmiMafia.isEnabled()) return;
+                // сбрасываем карту, чтобы addObserver снова прошёл для «потерянных» аккаунтов
+                if (System.currentTimeMillis() - lastEnsureAt > 50_000) {
+                    observers.clear();
+                }
+                ensureObservers();
+            } catch (Throwable e) {
+                FileLog.e(e);
+            }
+        };
+        try {
+            main.postDelayed(rebindRun, 60_000);
+        } catch (Throwable ignore) {}
+    }
+
+    // ── публичные снимки для меню ──────────────────────────────────────────
+
+    public boolean isGameOn() { return gameOn && System.currentTimeMillis() - gameSince < 4L * 3600_000; }
+
+    public String getGameStatusLine() {
+        if (!isGameOn()) return "Игра не идёт";
+        long sec = (System.currentTimeMillis() - gameSince) / 1000;
+        String phase = actAt > 0 && System.currentTimeMillis() - actAt < 180_000 ? "ночь/ход" : "день";
+        return "Игра · " + phase + " · " + (sec / 60) + "м";
+    }
+
+    public ArrayList<RoleEntry> getRolesSnapshot() {
+        ArrayList<RoleEntry> out = new ArrayList<>();
+        synchronized (rolesLock) {
+            for (RoleEntry e : roles) {
+                RoleEntry c = new RoleEntry();
+                c.name = e.name; c.role = e.role; c.own = e.own; c.dead = e.dead;
+                out.add(c);
+            }
+        }
+        return out;
+    }
+
+    public ArrayList<ActiveAcc> getActiveAccounts() {
+        ArrayList<ActiveAcc> out = new ArrayList<>();
+        ArrayList<Integer> accs = PikmiMafia.participatingAccounts(UserConfig.selectedAccount);
+        for (int account : accs) {
+            ActiveAcc a = new ActiveAcc();
+            a.account = account;
+            a.label = name(account);
+            a.role = accRoles.get(account);
+            AccStat st = status.get(account);
+            if (st != null) {
+                a.dead = st.dead;
+                a.blocked = st.blocked;
+                a.why = st.why;
+            }
+            MessageObject mo = lastPrompt.get(account);
+            if (mo != null && hasInline(mo.messageOwner)) {
+                a.prompt = mo;
+                forEachButton(mo.messageOwner, b -> {
+                    String tx = btnText(b);
+                    if (!TextUtils.isEmpty(tx)) a.buttons.add(tx);
+                });
+            }
+            out.add(a);
+        }
+        return out;
+    }
+
+    /** Нажать кнопку idx у последнего prompt аккаунта (из меню). */
+    public void pressActiveButton(int account, int buttonIndex) {
+        MessageObject mo = lastPrompt.get(account);
+        if (mo == null || mo.messageOwner == null || !hasInline(mo.messageOwner)) return;
+        try {
+            final int[] idx = {0};
+            final boolean[] done = {false};
+            forEachButton(mo.messageOwner, b -> {
+                if (done[0]) return;
+                byte[] data = btnData(b);
+                if (data == null) return;
+                if (idx[0] == buttonIndex) {
+                    pressCb(account, MessageObject.getDialogId(mo.messageOwner), mo.messageOwner.id, data);
+                    log("👆 меню: acc" + (account + 1) + " → " + btnText(b));
+                    done[0] = true;
+                    return;
+                }
+                idx[0]++;
+            });
+        } catch (Throwable e) { FileLog.e(e); }
+    }
+
+    // ── внутреннее состояние ───────────────────────────────────────────────
 
     private AccStat stat(int a) {
         AccStat st = status.get(a);
@@ -63,17 +232,25 @@ public class PikmiMafiaEngine {
     }
 
     private void startGame() {
-        gameOn = true; gameSince = System.currentTimeMillis(); actAt = 0;
-        status.clear(); accRoles.clear();
+        gameOn = true;
+        gameSince = System.currentTimeMillis();
+        actAt = 0;
+        status.clear();
+        accRoles.clear();
+        lastPrompt.clear();
         synchronized (rolesLock) { roles.clear(); }
-        cancelNight(); cancelVote();
+        cancelNight();
+        cancelVote();
         log("🎭 Новая игра");
+        notifyUi();
     }
 
     private void endGame(String footer) {
-        gameOn = false; cancelNight(); cancelVote();
-        if (PikmiMafia.isRolesEnabled()) publishRoles(footer);
+        gameOn = false;
+        cancelNight();
+        cancelVote();
         log("🏁 " + (footer != null ? footer : "Игра окончена"));
+        notifyUi();
     }
 
     private boolean gameActive() { return gameOn && System.currentTimeMillis() - gameSince < 4L * 3600_000; }
@@ -107,13 +284,22 @@ public class PikmiMafiaEngine {
             main.postDelayed(() -> doRegisterAll(mo), 400);
         }
         if (PikmiMafia.hit(PikmiMafia.getNightTrigger(), norm) && once("night:" + msg.id)) {
-            for (AccStat st : status.values()) { st.blocked = false; if (!st.dead) st.why = ""; st.killed = false; }
-            actAt = 0; startNightTimer(); log("🌙 Ночь " + PikmiMafia.getNightSec() + "с");
+            for (AccStat st : status.values()) {
+                st.blocked = false;
+                if (!st.dead) st.why = "";
+                st.killed = false;
+            }
+            actAt = 0;
+            startNightTimer();
+            log("🌙 Ночь " + PikmiMafia.getNightSec() + "с");
+            notifyUi();
         }
         if (PikmiMafia.hit(PikmiMafia.getDayTrigger(), norm) && once("day:" + msg.id)) {
-            cancelNight(); actAt = 0;
+            cancelNight();
+            actAt = 0;
             for (AccStat st : status.values()) st.killed = false;
             log("☀️ День");
+            notifyUi();
         }
         if (PikmiMafia.isVoteEnabled() && !TextUtils.isEmpty(PikmiMafia.getVoteTarget())
                 && PikmiMafia.hit(PikmiMafia.getVoteTrigger(), norm) && once("vch:" + msg.id)) {
@@ -133,9 +319,24 @@ public class PikmiMafiaEngine {
     private void handleDm(int account, MessageObject mo, String text, String norm, TLRPC.Message msg, TLRPC.User bot) {
         parseRole(account, text);
         AccStat st = stat(account);
-        if (PikmiMafia.hit(PikmiMafia.getDeadTrigger(), norm)) { st.dead = true; markDead(name(account)); }
-        if (PikmiMafia.hit(PikmiMafia.getLoverTrigger(), norm)) { st.blocked = true; st.why = "любовница"; }
-        if (PikmiMafia.hit(PikmiMafia.getSwindlerTrigger(), norm)) { st.blocked = true; st.why = "аферист"; }
+        if (PikmiMafia.hit(PikmiMafia.getDeadTrigger(), norm)) {
+            st.dead = true;
+            markDead(name(account));
+        }
+        if (PikmiMafia.hit(PikmiMafia.getLoverTrigger(), norm)) {
+            st.blocked = true;
+            st.why = "любовница";
+        }
+        if (PikmiMafia.hit(PikmiMafia.getSwindlerTrigger(), norm)) {
+            st.blocked = true;
+            st.why = "аферист";
+        }
+
+        // Сохраняем сообщение с кнопками для меню «Активные роли»
+        if (msg.reply_markup instanceof TLRPC.TL_replyInlineMarkup && gameActive()) {
+            lastPrompt.put(account, mo);
+            notifyUi();
+        }
 
         if (PikmiMafia.isVoteEnabled() && !TextUtils.isEmpty(PikmiMafia.getVoteTarget())
                 && PikmiMafia.hit(PikmiMafia.getVoteTrigger(), norm) && once("vdm:" + account + ":" + msg.id)) {
@@ -143,8 +344,9 @@ public class PikmiMafiaEngine {
         }
         if (PikmiMafia.isAutoRead() && gameActive() && bot != null) {
             main.postDelayed(() -> {
-                try { MessagesController.getInstance(account).markDialogAsRead(bot.id, msg.id, msg.id, msg.date, false, 0, 0, true, 0); }
-                catch (Throwable e) { FileLog.e(e); }
+                try {
+                    MessagesController.getInstance(account).markDialogAsRead(bot.id, msg.id, msg.id, msg.date, false, 0, 0, true, 0);
+                } catch (Throwable e) { FileLog.e(e); }
             }, 300);
         }
         if (PikmiMafia.isAutoKill()) {
@@ -159,6 +361,10 @@ public class PikmiMafiaEngine {
             String role = accRoles.get(account);
             if (role != null && PikmiMafia.normText(role).contains("адвокат"))
                 tryPress(account, mo, bot, PikmiMafia.getLawyerRole());
+        }
+        // Combat chemist: авто-нажатие первой кнопки выбора зелья
+        if (PikmiMafia.BOT_COMBAT.equals(PikmiMafia.getBotMode()) && msg.reply_markup != null && gameActive()) {
+            tryChemist(account, mo, bot);
         }
     }
 
@@ -183,48 +389,58 @@ public class PikmiMafiaEngine {
                 if (ln.trim().isEmpty()) continue;
                 needNext = false;
                 String r = ln.trim().replaceAll("^[\\s\\p{P}]+|[\\s\\p{P}!！]+$", "");
-                if (!r.isEmpty() && r.length() <= 40) { myRole = r; allyMode = false; continue; }
+                if (!r.isEmpty() && r.length() <= 40) {
+                    myRole = r;
+                    allyMode = false;
+                    continue;
+                }
             }
             String rl = extractRole(roleTrig, ln, n);
-            if (myRole == null && rl != null) { myRole = rl; allyMode = false; continue; }
-            if (myRole == null && headerOnly(roleTrig, n)) { needNext = true; continue; }
-            if (!TextUtils.isEmpty(allyTrig) && n.contains(allyTrig)) { allyMode = true; continue; }
+            if (myRole == null && rl != null) {
+                myRole = rl;
+                allyMode = false;
+                continue;
+            }
+            if (myRole == null && headerOnly(roleTrig, n)) {
+                needNext = true;
+                continue;
+            }
+            if (n.contains(allyTrig)) {
+                allyMode = true;
+                continue;
+            }
             if (allyMode) {
-                if (ln.trim().isEmpty()) continue;
                 Matcher m = ALLY.matcher(ln.trim());
                 if (m.find()) allies.add(new String[]{m.group(1).trim(), m.group(2).trim()});
-                else allyMode = false;
             }
         }
-        if (myRole == null && allies.isEmpty()) return;
-        if (myRole != null) { accRoles.put(account, myRole); setRole(name(account), myRole, true); }
+        if (myRole != null) {
+            accRoles.put(account, myRole);
+            setRole(name(account), myRole, true);
+        }
         for (String[] a : allies) setRole(a[0], a[1], false);
-        if (PikmiMafia.isRolesEnabled()) main.postDelayed(() -> publishRoles(null), 1500);
+        notifyUi();
     }
 
-    private String extractRole(String trigger, String line, String normLine) {
-        for (String part : trigger.split("\\|")) {
-            part = part.trim();
-            String lead = part.replaceAll("[-–—:\\s]+$", "").trim();
-            String nLead = PikmiMafia.normText(lead);
-            if (nLead.isEmpty()) continue;
-            if (normLine.contains(nLead)) {
-                for (int i = 0; i < line.length(); i++) {
-                    char c = line.charAt(i);
-                    if (c == '-' || c == '–' || c == '—' || c == ':') {
-                        String r = line.substring(i + 1).trim().replaceAll("^[\\s\\p{P}]+|[\\s\\p{P}!！]+$", "");
-                        if (!r.isEmpty()) return r;
-                    }
-                }
+    private String extractRole(String roleTrig, String ln, String n) {
+        for (String part : roleTrig.split("\\|")) {
+            String t = PikmiMafia.normText(part);
+            if (t.isEmpty()) continue;
+            int i = n.indexOf(t);
+            if (i >= 0) {
+                String after = ln.substring(Math.min(ln.length(), i + part.length())).trim();
+                after = after.replaceAll("^[-–—:\\s]+", "").trim();
+                after = after.replaceAll("[\\s\\p{P}!！]+$", "").trim();
+                if (!after.isEmpty() && after.length() <= 40) return after;
             }
         }
         return null;
     }
 
-    private boolean headerOnly(String trigger, String normLine) {
-        for (String part : trigger.split("\\|")) {
-            String n = PikmiMafia.normText(part.replaceAll("[-–—:\\s]+$", ""));
-            if (!n.isEmpty() && normLine.endsWith(n)) return true;
+    private boolean headerOnly(String roleTrig, String n) {
+        for (String part : roleTrig.split("\\|")) {
+            String t = PikmiMafia.normText(part);
+            if (!t.isEmpty() && (n.equals(t) || n.endsWith(t))) return true;
         }
         return false;
     }
@@ -235,19 +451,29 @@ public class PikmiMafiaEngine {
         synchronized (rolesLock) {
             for (RoleEntry e : roles) {
                 if (PikmiMafia.normText(e.name).equals(key)) {
-                    if (own) e.own = true; e.role = role; return;
+                    if (own) e.own = true;
+                    e.role = role;
+                    return;
                 }
             }
-            RoleEntry e = new RoleEntry(); e.name = name; e.role = role; e.own = own; roles.add(e);
+            RoleEntry e = new RoleEntry();
+            e.name = name;
+            e.role = role;
+            e.own = own;
+            roles.add(e);
         }
     }
 
     private void markDead(String name) {
         String key = PikmiMafia.normText(name);
         synchronized (rolesLock) {
-            for (RoleEntry e : roles) if (PikmiMafia.normText(e.name).equals(key)) { e.dead = true; break; }
+            for (RoleEntry e : roles)
+                if (PikmiMafia.normText(e.name).equals(key)) {
+                    e.dead = true;
+                    break;
+                }
         }
-        if (PikmiMafia.isRolesEnabled()) main.postDelayed(() -> publishRoles(null), 800);
+        notifyUi();
     }
 
     private void markHang(String text) {
@@ -268,24 +494,10 @@ public class PikmiMafiaEngine {
                 if (nm.equals(before) || (nm.length() >= 3 && before.contains(nm))) stat(a).dead = true;
             }
         }
-        if (PikmiMafia.isRolesEnabled()) main.postDelayed(() -> publishRoles(null), 800);
+        notifyUi();
     }
 
-    private void publishRoles(String footer) {
-        StringBuilder sb = new StringBuilder("📋 Роли в игре");
-        if (footer != null) sb.append(" · ").append(footer);
-        sb.append("\n");
-        synchronized (rolesLock) {
-            if (roles.isEmpty()) sb.append("пока пусто");
-            else for (RoleEntry e : roles) {
-                if (e.dead) sb.append("☠️ ");
-                else if (e.own) sb.append("🤖 ");
-                else sb.append("🤝 ");
-                sb.append(e.name).append(" — ").append(e.role).append("\n");
-            }
-        }
-        logRaw(sb.toString().trim());
-    }
+    // ── регистрация / голос / кнопки ───────────────────────────────────────
 
     private void doRegisterAll(MessageObject mo) {
         String payload = extractParam(mo);
@@ -296,51 +508,49 @@ public class PikmiMafiaEngine {
         log("📝 Регистрация x" + accs.size() + (param != null ? " param=" + param : ""));
         for (int account : accs) {
             final int acc = account;
-            Utilities.globalQueue.postRunnable(() -> { try { registerOne(acc, bot, param, mo); } catch (Throwable e) { FileLog.e(e); } });
+            Utilities.globalQueue.postRunnable(() -> {
+                try { registerOne(acc, bot, param, mo); } catch (Throwable e) { FileLog.e(e); }
+            });
         }
     }
 
     private String extractParam(MessageObject mo) {
-        try {
-            if (!(mo.messageOwner.reply_markup instanceof TLRPC.TL_replyInlineMarkup)) return null;
-            TLRPC.TL_replyInlineMarkup mk = (TLRPC.TL_replyInlineMarkup) mo.messageOwner.reply_markup;
-            for (TLRPC.TL_keyboardButtonRow row : mk.rows)
-                for (TLRPC.KeyboardButton b : row.buttons)
-                    if (b instanceof TLRPC.TL_keyboardButtonUrl) {
-                        String url = ((TLRPC.TL_keyboardButtonUrl) b).url;
-                        if (url == null) continue;
-                        Matcher m = START_EQ.matcher(url);
-                        if (m.find()) return m.group(1);
-                        int i = url.indexOf("start=");
-                        if (i >= 0) {
-                            String p = url.substring(i + 6);
-                            int amp = p.indexOf('&');
-                            return amp > 0 ? p.substring(0, amp) : p;
-                        }
-                    }
-        } catch (Throwable e) { FileLog.e(e); }
-        return null;
+        if (mo == null || mo.messageOwner == null) return null;
+        final String[] out = {null};
+        forEachButton(mo.messageOwner, b -> {
+            if (out[0] != null) return;
+            String url = btnUrl(b);
+            if (url == null) return;
+            Matcher m = START_EQ.matcher(url);
+            if (m.find()) { out[0] = m.group(1); return; }
+            int i = url.indexOf("start=");
+            if (i >= 0) {
+                String p2 = url.substring(i + 6);
+                int amp = p2.indexOf('&');
+                out[0] = amp > 0 ? p2.substring(0, amp) : p2;
+            }
+        });
+        return out[0];
     }
 
     private String extractBot(MessageObject mo) {
-        try {
-            if (!(mo.messageOwner.reply_markup instanceof TLRPC.TL_replyInlineMarkup)) return null;
-            TLRPC.TL_replyInlineMarkup mk = (TLRPC.TL_replyInlineMarkup) mo.messageOwner.reply_markup;
-            for (TLRPC.TL_keyboardButtonRow row : mk.rows)
-                for (TLRPC.KeyboardButton b : row.buttons)
-                    if (b instanceof TLRPC.TL_keyboardButtonUrl) {
-                        String url = ((TLRPC.TL_keyboardButtonUrl) b).url;
-                        if (url != null && (url.contains("t.me/") || url.contains("telegram.me/"))) {
-                            String path = url.replaceAll("https?://(t\\.me|telegram\\.me)/", "");
-                            int q = path.indexOf('?');
-                            if (q > 0) path = path.substring(0, q);
-                            path = path.replace("@", "").trim();
-                            if (!path.isEmpty() && !path.startsWith("c/") && !path.contains("/")) return path;
-                        }
-                    }
-        } catch (Throwable ignore) {}
-        return null;
+        if (mo == null || mo.messageOwner == null) return null;
+        final String[] out = {null};
+        forEachButton(mo.messageOwner, b -> {
+            if (out[0] != null) return;
+            String url = btnUrl(b);
+            if (url == null) return;
+            if (url.contains("t.me/") || url.contains("telegram.me/")) {
+                String path = url.replaceAll("https?://(t\\.me|telegram\\.me)/", "");
+                int q = path.indexOf('?');
+                if (q > 0) path = path.substring(0, q);
+                path = path.replace("@", "").trim();
+                if (!path.isEmpty() && !path.startsWith("c/") && !path.contains("/")) out[0] = path;
+            }
+        });
+        return out[0];
     }
+
 
     private void registerOne(int account, String botUsername, String startParam, MessageObject regMsg) {
         MessagesController mc = MessagesController.getInstance(account);
@@ -348,10 +558,12 @@ public class PikmiMafiaEngine {
         req.username = botUsername;
         ConnectionsManager.getInstance(account).sendRequest(req, (response, error) -> {
             if (!(response instanceof TLRPC.TL_contacts_resolvedPeer)) {
-                log("⚠️ resolve @" + botUsername + " acc" + (account + 1)); return;
+                log("⚠️ resolve @" + botUsername + " acc" + (account + 1));
+                return;
             }
             TLRPC.TL_contacts_resolvedPeer res = (TLRPC.TL_contacts_resolvedPeer) response;
-            mc.putUsers(res.users, false); mc.putChats(res.chats, false);
+            mc.putUsers(res.users, false);
+            mc.putChats(res.chats, false);
             if (res.peer == null || res.peer.user_id == 0) return;
             TLRPC.User bot = mc.getUser(res.peer.user_id);
             if (bot == null) return;
@@ -361,14 +573,18 @@ public class PikmiMafiaEngine {
                     start.bot = mc.getInputUser(bot);
                     start.peer = mc.getInputPeer(bot.id);
                     start.start_param = startParam;
-                    start.random_id = SendMessagesHelper.getNextRandomId();
-                    ConnectionsManager.getInstance(account).sendRequest(start, (r2, e2) ->
-                            log(e2 != null ? "⚠️ startBot acc" + (account + 1) : "✅ reg acc" + (account + 1)));
+                    start.random_id = Utilities.random.nextLong();
+                    ConnectionsManager.getInstance(account).sendRequest(start, (r2, e2) -> {
+                        if (PikmiMafia.isTournament() && pressColor(account, regMsg, PikmiMafia.getColor())) {
+                            log("✅ tour acc" + (account + 1));
+                            return;
+                        }
+                        log(e2 != null ? "⚠️ startBot acc" + (account + 1) : "✅ reg acc" + (account + 1));
+                    });
                 } else {
-                    if (PikmiMafia.isTournament() && pressColor(account, regMsg, PikmiMafia.getColor())) {
-                        log("✅ tour acc" + (account + 1)); return;
-                    }
-                    SendMessagesHelper.getInstance(account).sendMessage(SendMessagesHelper.SendMessageParams.of("/start", bot.id));
+                    SendMessagesHelper.SendMessageParams p = SendMessagesHelper.SendMessageParams.of("/start", bot.id);
+                    p.notify = false;
+                    SendMessagesHelper.getInstance(account).sendMessage(p);
                     log("✅ /start acc" + (account + 1));
                 }
             } catch (Throwable e) { FileLog.e(e); }
@@ -376,42 +592,49 @@ public class PikmiMafiaEngine {
     }
 
     private boolean pressColor(int account, MessageObject mo, String color) {
-        try {
-            if (!(mo.messageOwner.reply_markup instanceof TLRPC.TL_replyInlineMarkup)) return false;
-            String want = color.toLowerCase(Locale.US);
-            TLRPC.TL_replyInlineMarkup mk = (TLRPC.TL_replyInlineMarkup) mo.messageOwner.reply_markup;
-            for (TLRPC.TL_keyboardButtonRow row : mk.rows)
-                for (TLRPC.KeyboardButton b : row.buttons) {
-                    String t = b.text != null ? b.text.toLowerCase(Locale.US) : "";
-                    boolean match = t.contains(want)
-                            || (want.equals("blue") && (t.contains("син") || t.contains("🔵")))
-                            || (want.equals("red") && (t.contains("крас") || t.contains("🔴")))
-                            || (want.equals("orange") && (t.contains("оранж") || t.contains("🟠")))
-                            || (want.equals("black") && (t.contains("чёрн") || t.contains("черн") || t.contains("⚫")))
-                            || (want.equals("yellow") && (t.contains("жёлт") || t.contains("желт") || t.contains("🟡")));
-                    if (match && b instanceof TLRPC.TL_keyboardButtonCallback) {
-                        pressCb(account, MessageObject.getDialogId(mo.messageOwner), mo.messageOwner.id, ((TLRPC.TL_keyboardButtonCallback) b).data);
-                        return true;
-                    }
-                }
-        } catch (Throwable e) { FileLog.e(e); }
-        return false;
+        if (mo == null || mo.messageOwner == null || !hasInline(mo.messageOwner)) return false;
+        String want = PikmiMafia.normText(color);
+        final boolean[] ok = {false};
+        forEachButton(mo.messageOwner, b -> {
+            if (ok[0]) return;
+            byte[] data = btnData(b);
+            if (data == null) return;
+            String bt = PikmiMafia.normText(btnText(b));
+            boolean match = bt.contains(want)
+                    || ("blue".equals(color) && (bt.contains("син") || bt.contains("blue")))
+                    || ("red".equals(color) && (bt.contains("крас") || bt.contains("red")))
+                    || ("orange".equals(color) && (bt.contains("оранж") || bt.contains("orange")));
+            if (match) {
+                pressCb(account, MessageObject.getDialogId(mo.messageOwner), mo.messageOwner.id, data);
+                ok[0] = true;
+            }
+        });
+        return ok[0];
     }
+
 
     private void scheduleVote(int msgDate) {
         cancelVote();
         long delay;
-        if ("instant".equals(PikmiMafia.getVoteMode())) delay = 500;
-        else {
-            long endAt = msgDate * 1000L + PikmiMafia.getVoteTime() * 1000L;
-            delay = Math.max(300, endAt - System.currentTimeMillis() - PikmiMafia.getVoteBefore() * 1000L);
+        if ("instant".equals(PikmiMafia.getVoteMode())) {
+            delay = 400;
+        } else {
+            int before = PikmiMafia.getVoteBefore();
+            int total = PikmiMafia.getVoteTime();
+            long elapsed = Math.max(0, (int) (System.currentTimeMillis() / 1000) - msgDate);
+            delay = Math.max(400, (total - before - elapsed) * 1000L);
         }
+        log("🗳 Голос через " + (delay / 1000) + "с → " + PikmiMafia.getVoteTarget());
         voteRun = this::doVoteAll;
         main.postDelayed(voteRun, delay);
-        log("🗳 Голос через " + (delay / 1000) + "с → " + PikmiMafia.getVoteTarget());
     }
 
-    private void cancelVote() { if (voteRun != null) { main.removeCallbacks(voteRun); voteRun = null; } }
+    private void cancelVote() {
+        if (voteRun != null) {
+            main.removeCallbacks(voteRun);
+            voteRun = null;
+        }
+    }
 
     private void doVoteAll() {
         String nick = PikmiMafia.getVoteTarget();
@@ -419,11 +642,13 @@ public class PikmiMafiaEngine {
         String bot = PikmiMafia.getBotUsername();
         for (int account : PikmiMafia.participatingAccounts(UserConfig.selectedAccount)) {
             AccStat st = stat(account);
-            if (st.dead || st.blocked) { log("⏭ acc" + (account + 1) + " " + (st.dead ? "мёртв" : st.why)); continue; }
+            if (st.dead || st.blocked) {
+                log("⏭ acc" + (account + 1) + " " + (st.dead ? "мёртв" : st.why));
+                continue;
+            }
             final int acc = account;
             Utilities.globalQueue.postRunnable(() -> voteOne(acc, bot, nick));
         }
-        PikmiMafia.setVoteTarget("");
     }
 
     private void voteOne(int account, String botUsername, String nick) {
@@ -436,27 +661,32 @@ public class PikmiMafiaEngine {
             mc.putUsers(res.users, false);
             long botId = res.peer.user_id;
             TLRPC.TL_messages_getHistory hist = new TLRPC.TL_messages_getHistory();
-            hist.peer = mc.getInputPeer(botId); hist.limit = 12;
+            hist.peer = mc.getInputPeer(botId);
+            hist.limit = 12;
             ConnectionsManager.getInstance(account).sendRequest(hist, (r2, e2) -> {
                 if (!(r2 instanceof TLRPC.messages_Messages)) return;
                 String want = PikmiMafia.normText(nick);
                 for (TLRPC.Message m : ((TLRPC.messages_Messages) r2).messages) {
-                    if (!(m.reply_markup instanceof TLRPC.TL_replyInlineMarkup)) continue;
-                    for (TLRPC.TL_keyboardButtonRow row : ((TLRPC.TL_replyInlineMarkup) m.reply_markup).rows)
-                        for (TLRPC.KeyboardButton b : row.buttons)
-                            if (b instanceof TLRPC.TL_keyboardButtonCallback) {
-                                String bt = PikmiMafia.normText(b.text);
-                                if (bt.contains(want) || want.contains(bt)) {
-                                    pressCb(account, botId, m.id, ((TLRPC.TL_keyboardButtonCallback) b).data);
-                                    log("✅ голос acc" + (account + 1) + " → " + b.text);
-                                    return;
-                                }
-                            }
+                    if (!hasInline(m)) continue;
+                    final boolean[] found = {false};
+                    forEachButton(m, b -> {
+                        if (found[0]) return;
+                        byte[] data = btnData(b);
+                        if (data == null) return;
+                        String bt = PikmiMafia.normText(btnText(b));
+                        if (bt.contains(want) || want.contains(bt)) {
+                            pressCb(account, botId, m.id, data);
+                            log("✅ голос acc" + (account + 1) + " → " + btnText(b));
+                            found[0] = true;
+                        }
+                    });
+                    if (found[0]) return;
                 }
                 log("⚠️ нет кнопки «" + nick + "» acc" + (account + 1));
             });
         });
     }
+
 
     private void tryKill(int account, MessageObject mo, TLRPC.User bot) {
         AccStat st = stat(account);
@@ -466,58 +696,136 @@ public class PikmiMafiaEngine {
         String nr = PikmiMafia.normText(role);
         if (!nr.contains("комиссар") && !nr.contains("коммисар") && !nr.contains("сержант")) return;
         String kill = PikmiMafia.normText(PikmiMafia.getKillButton());
-        try {
-            if (!(mo.messageOwner.reply_markup instanceof TLRPC.TL_replyInlineMarkup)) return;
-            for (TLRPC.TL_keyboardButtonRow row : ((TLRPC.TL_replyInlineMarkup) mo.messageOwner.reply_markup).rows)
-                for (TLRPC.KeyboardButton b : row.buttons)
-                    if (b instanceof TLRPC.TL_keyboardButtonCallback && PikmiMafia.normText(b.text).contains(kill)) {
-                        st.killed = true;
-                        if (nr.contains("сержант")) { accRoles.put(account, "Комиссар"); setRole(name(account), "Комиссар", true); }
-                        pressCb(account, bot.id, mo.messageOwner.id, ((TLRPC.TL_keyboardButtonCallback) b).data);
-                        log("🔫 Убить acc" + (account + 1));
-                        return;
-                    }
-        } catch (Throwable e) { FileLog.e(e); }
+        if (mo == null || mo.messageOwner == null || !hasInline(mo.messageOwner)) return;
+        forEachButton(mo.messageOwner, b -> {
+            if (st.killed) return;
+            byte[] data = btnData(b);
+            if (data == null) return;
+            if (PikmiMafia.normText(btnText(b)).contains(kill)) {
+                st.killed = true;
+                if (nr.contains("сержант")) {
+                    accRoles.put(account, "Комиссар");
+                    setRole(name(account), "Комиссар", true);
+                }
+                pressCb(account, bot.id, mo.messageOwner.id, data);
+                log("🔫 Убить acc" + (account + 1));
+                notifyUi();
+            }
+        });
     }
+
 
     private void tryPress(int account, MessageObject mo, TLRPC.User bot, String buttonName) {
         String want = PikmiMafia.normText(buttonName);
-        if (want.isEmpty() || !once("p:" + account + ":" + mo.getId() + ":" + want)) return;
-        try {
-            if (!(mo.messageOwner.reply_markup instanceof TLRPC.TL_replyInlineMarkup)) return;
-            for (TLRPC.TL_keyboardButtonRow row : ((TLRPC.TL_replyInlineMarkup) mo.messageOwner.reply_markup).rows)
-                for (TLRPC.KeyboardButton b : row.buttons)
-                    if (b instanceof TLRPC.TL_keyboardButtonCallback && PikmiMafia.normText(b.text).contains(want)) {
-                        pressCb(account, bot.id, mo.messageOwner.id, ((TLRPC.TL_keyboardButtonCallback) b).data);
-                        log("⚖️ " + buttonName + " acc" + (account + 1));
-                        return;
-                    }
-        } catch (Throwable e) { FileLog.e(e); }
+        if (want.isEmpty() || mo == null || mo.messageOwner == null) return;
+        if (!once("p:" + account + ":" + mo.getId() + ":" + want)) return;
+        if (!hasInline(mo.messageOwner)) return;
+        forEachButton(mo.messageOwner, b -> {
+            byte[] data = btnData(b);
+            if (data == null) return;
+            if (PikmiMafia.normText(btnText(b)).contains(want)) {
+                pressCb(account, bot.id, mo.messageOwner.id, data);
+                log("⚖️ " + buttonName + " acc" + (account + 1));
+            }
+        });
     }
 
-    private void pressLynch(MessageObject mo, boolean like) {
-        try {
-            if (!(mo.messageOwner.reply_markup instanceof TLRPC.TL_replyInlineMarkup)) return;
-            byte[] data = null;
-            ArrayList<byte[]> all = new ArrayList<>();
-            String want = like ? "👍" : "👎";
-            for (TLRPC.TL_keyboardButtonRow row : ((TLRPC.TL_replyInlineMarkup) mo.messageOwner.reply_markup).rows)
-                for (TLRPC.KeyboardButton b : row.buttons)
-                    if (b instanceof TLRPC.TL_keyboardButtonCallback) {
-                        byte[] d = ((TLRPC.TL_keyboardButtonCallback) b).data;
-                        all.add(d);
-                        if (b.text != null && b.text.contains(want)) data = d;
-                    }
-            if (data == null && !all.isEmpty()) data = all.get(like ? 0 : Math.min(1, all.size() - 1));
+
+    private void tryChemist(int account, MessageObject mo, TLRPC.User bot) {
+        if (bot == null || mo == null || mo.messageOwner == null) return;
+        if (!once("chem:" + account + ":" + mo.getId())) return;
+        String role = accRoles.get(account);
+        if (role == null || !PikmiMafia.normText(role).contains("химик")) return;
+        if (!hasInline(mo.messageOwner)) return;
+        forEachButton(mo.messageOwner, b -> {
+            byte[] data = btnData(b);
             if (data == null) return;
+            String bt = PikmiMafia.normText(btnText(b));
+            if (bt.matches("\\d+") || bt.contains("зелье") || bt.contains("зелие")) {
+                pressCb(account, bot.id, mo.messageOwner.id, data);
+                log("🧪 химик acc" + (account + 1) + " → " + btnText(b));
+            }
+        });
+    }
+
+
+    private void pressLynch(MessageObject mo, boolean like) {
+        if (mo == null || mo.messageOwner == null || !hasInline(mo.messageOwner)) return;
+        try {
+            final byte[][] data = {null};
+            final ArrayList<byte[]> all = new ArrayList<>();
+            String want = like ? "👍" : "👎";
+            forEachButton(mo.messageOwner, b -> {
+                byte[] d = btnData(b);
+                if (d == null) return;
+                all.add(d);
+                String tx = btnText(b);
+                if (tx != null && tx.contains(want)) data[0] = d;
+            });
+            if (data[0] == null && !all.isEmpty()) data[0] = like ? all.get(0) : all.get(all.size() - 1);
+            if (data[0] == null) return;
             long did = MessageObject.getDialogId(mo.messageOwner);
             int mid = mo.messageOwner.id;
             for (int account : PikmiMafia.participatingAccounts(UserConfig.selectedAccount)) {
-                AccStat st = stat(account);
-                if (st.dead || st.blocked) continue;
-                pressCb(account, did, mid, data);
+                pressCb(account, did, mid, data[0]);
             }
             log(like ? "👍 линч" : "👎 линч");
+        } catch (Throwable e) { FileLog.e(e); }
+    }
+
+
+    private static boolean hasInline(TLRPC.Message msg) {
+        return msg != null && msg.reply_markup instanceof TLRPC.TL_replyInlineMarkup;
+    }
+
+    private static TLRPC.TL_replyInlineMarkup markup(TLRPC.Message msg) {
+        return (TLRPC.TL_replyInlineMarkup) msg.reply_markup;
+    }
+
+    private static String btnText(TL_keyboard.KeyboardButtonProto b) {
+        try {
+            if (b == null) return "";
+            try {
+                String s = b.getText();
+                if (s != null && !s.isEmpty()) return s;
+            } catch (Throwable ignore) {}
+            if (b instanceof TL_keyboard.KeyboardInlineButton) {
+                String s = ((TL_keyboard.KeyboardInlineButton) b).text;
+                return s == null ? "" : s;
+            }
+            return "";
+        } catch (Throwable e) { return ""; }
+    }
+
+    private static byte[] btnData(TL_keyboard.KeyboardButtonProto b) {
+        try {
+            if (b == null) return null;
+            if (!TLKeyboardHelper.isType(b, TL_keyboard.TL_inlineButtonTypeCallback.class)) return null;
+            return b.getData();
+        } catch (Throwable e) { return null; }
+    }
+
+    private static String btnUrl(TL_keyboard.KeyboardButtonProto b) {
+        try {
+            TL_keyboard.TL_inlineButtonTypeUrl u = TLKeyboardHelper.getType(b, TL_keyboard.TL_inlineButtonTypeUrl.class);
+            return u != null ? u.url : null;
+        } catch (Throwable e) { return null; }
+    }
+
+    private interface BtnVisitor { void visit(TL_keyboard.KeyboardButtonProto b); }
+
+    private static void forEachButton(TLRPC.Message msg, BtnVisitor v) {
+        if (!hasInline(msg)) return;
+        try {
+            TLRPC.TL_replyInlineMarkup mk = markup(msg);
+            for (int i = 0; i < mk.rows.size(); i++) {
+                TL_keyboard.KeyboardInlineButtonRow row = mk.rows.get(i);
+                if (row == null || row.buttons == null) continue;
+                for (int j = 0; j < row.buttons.size(); j++) {
+                    TL_keyboard.KeyboardInlineButton b = row.buttons.get(j);
+                    if (b != null) v.visit(b);
+                }
+            }
         } catch (Throwable e) { FileLog.e(e); }
     }
 
@@ -526,7 +834,8 @@ public class PikmiMafiaEngine {
         try {
             TLRPC.TL_messages_getBotCallbackAnswer req = new TLRPC.TL_messages_getBotCallbackAnswer();
             req.peer = MessagesController.getInstance(account).getInputPeer(dialogId);
-            req.msg_id = msgId; req.data = data;
+            req.msg_id = msgId;
+            req.data = data;
             ConnectionsManager.getInstance(account).sendRequest(req, (r, e) -> {});
         } catch (Throwable e) { FileLog.e(e); }
     }
@@ -543,8 +852,14 @@ public class PikmiMafiaEngine {
     }
 
     private void cancelNight() {
-        if (nightWarn != null) { main.removeCallbacks(nightWarn); nightWarn = null; }
-        if (nightEnd != null) { main.removeCallbacks(nightEnd); nightEnd = null; }
+        if (nightWarn != null) {
+            main.removeCallbacks(nightWarn);
+            nightWarn = null;
+        }
+        if (nightEnd != null) {
+            main.removeCallbacks(nightEnd);
+            nightEnd = null;
+        }
     }
 
     private boolean once(String key) {
@@ -556,16 +871,8 @@ public class PikmiMafiaEngine {
         return p == null;
     }
 
-    private void log(String text) { FileLog.d("PikmiMafia: " + text); logRaw(text); }
-
-    private void logRaw(String text) {
-        try {
-            int account = UserConfig.selectedAccount;
-            long did = PikmiMafia.getLogChat();
-            if (did == 0) did = UserConfig.getInstance(account).getClientUserId();
-            SendMessagesHelper.SendMessageParams params = SendMessagesHelper.SendMessageParams.of(text, did);
-            params.notify = false;
-            SendMessagesHelper.getInstance(account).sendMessage(params);
-        } catch (Throwable e) { FileLog.e(e); }
+    /** Только в FileLog — в чат ничего не шлём. */
+    private void log(String text) {
+        FileLog.d("PikmiMafia: " + text);
     }
 }
