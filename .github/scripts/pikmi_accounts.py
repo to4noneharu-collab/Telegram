@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
-"""Поднимает лимит аккаунтов как в AyuGram/exteraGram: 8 без Premium / 16 с Premium.
+"""Поднимает лимит аккаунтов как в AyuGram/exteraGram: 16 без Premium / 32 с Premium.
 
 Патчит:
-  - UserConfig.MAX_ACCOUNT_DEFAULT_COUNT = 8
-  - UserConfig.MAX_ACCOUNT_COUNT = 16
-  - getMaxAccountCount() → hasPremium ? 16 : 8
-  - jni/tgnet/ConnectionsManager.cpp — static instance0..instance15
+  - UserConfig.MAX_ACCOUNT_DEFAULT_COUNT = 16
+  - UserConfig.MAX_ACCOUNT_COUNT = 32
+  - getMaxAccountCount() → hasPremium ? 32 : 16
+  - jni/tgnet/ConnectionsManager.cpp — static instance0..instance31
   - jni/tgnet/Defines.h MAX_ACCOUNT_COUNT (если есть)
 
 Без native-патча при MAX>5 приложение падает при старте.
@@ -20,9 +20,9 @@ UC = Path("TMessagesProj/src/main/java/org/telegram/messenger/UserConfig.java")
 CM = Path("TMessagesProj/jni/tgnet/ConnectionsManager.cpp")
 DH = Path("TMessagesProj/jni/tgnet/Defines.h")
 
-# Как в AyuGram FAQ: 8 без / 16 с Premium
-DEFAULT_COUNT = 8
-MAX_COUNT = 16
+# 16 без Premium / 32 с Premium
+DEFAULT_COUNT = 16
+MAX_COUNT = 32
 
 SKIP = os.environ.get("PG_SKIP", "")
 
@@ -81,7 +81,7 @@ def main():
             print("Java getMaxAccountCount: уже применено")
         else:
             new_body = (
-                "\n        // PG_ACCOUNTS: как AyuGram — 16 с Premium, 8 без\n"
+                "\n        // PG_ACCOUNTS: как AyuGram — 32 с Premium, 16 без\n"
                 "        return hasPremiumOnAccounts() ? %d : %d;\n    "
                 % (MAX_COUNT, DEFAULT_COUNT)
             )
@@ -157,7 +157,7 @@ def main():
     cm = cm[: m.start()] + new_func + cm[m.end() :]
     CM.write_text(cm, encoding="utf-8")
     print("native: ConnectionsManager::getInstance → %d инстансов (0..%d)" % (MAX_COUNT, MAX_COUNT - 1))
-    print("Готово. Лимит как в AyuGram: %d без Premium / %d с Premium." % (DEFAULT_COUNT, MAX_COUNT))
+    print("Готово. Лимит: %d без Premium / %d с Premium." % (DEFAULT_COUNT, MAX_COUNT))
 
 
 if __name__ == "__main__":

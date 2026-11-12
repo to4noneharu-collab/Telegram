@@ -79,6 +79,9 @@ public class PikmiMafia {
     public static void setWarnSec(int s) { p().edit().putInt("warn", Math.max(0, Math.min(3600, s))).apply(); }
     public static boolean isAutoKill() { try { return p().getBoolean("auto_kill", true); } catch (Throwable t) { return true; } }
     public static void setAutoKill(boolean v) { p().edit().putBoolean("auto_kill", v).apply(); }
+    public static boolean isAutoReg() { try { return p().getBoolean("auto_reg", true); } catch (Throwable t) { return true; } }
+    public static void setAutoReg(boolean v) { p().edit().putBoolean("auto_reg", v).apply(); }
+
     public static boolean isAutoRead() { try { return p().getBoolean("auto_read", true); } catch (Throwable t) { return true; } }
     public static void setAutoRead(boolean v) { p().edit().putBoolean("auto_read", v).apply(); }
     public static boolean isRolesEnabled() { try { return p().getBoolean("roles_enabled", true); } catch (Throwable t) { return true; } }
@@ -96,8 +99,11 @@ public class PikmiMafia {
 
     public static String getRegTrigger() {
         try { String t = p().getString("reg_trigger", null); if (!TextUtils.isEmpty(t)) return t;
-            return BOT_COMBAT.equals(getBotMode()) ? "Регистрация началась" : "Ведётся набор в игру";
-        } catch (Throwable t) { return "Ведётся набор в игру"; }
+            if (BOT_COMBAT.equals(getBotMode())) return "Регистрация началась|Набор на игру|регистрация";
+            if (BOT_TRUE.equals(getBotMode())) return "Ведётся набор в игру|Набор в игру|Регистрация";
+            if (BOT_MAFIOSO.equals(getBotMode())) return "Ведётся набор в игру|Набор в игру|Регистрация";
+            return "Ведётся набор в игру|Набор в игру|Регистрация началась|регистрация";
+        } catch (Throwable t) { return "Ведётся набор в игру|Набор в игру|регистрация"; }
     }
     public static String getVoteTrigger() {
         try { String t = p().getString("vote_trigger", null); if (!TextUtils.isEmpty(t)) return t;

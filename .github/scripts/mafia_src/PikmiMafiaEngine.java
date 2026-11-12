@@ -261,7 +261,8 @@ public class PikmiMafiaEngine {
         String text = msg.message != null ? msg.message : "";
         String norm = PikmiMafia.normText(text);
         long dialogId = MessageObject.getDialogId(msg);
-        if (!PikmiMafia.participatingAccounts(UserConfig.selectedAccount).contains(account)) return;
+        // Участвует ли ЭТОТ аккаунт (не selectedAccount — иначе в solo сообщения с других акков отбрасывались)
+        if (!PikmiMafia.participatingAccounts(account).contains(account)) return;
 
         TLRPC.User sender = null;
         boolean fromBot = false;
@@ -274,13 +275,42 @@ public class PikmiMafiaEngine {
         } catch (Throwable ignore) {}
 
         long regChat = PikmiMafia.getRegChat();
-        if (regChat != 0 && dialogId == regChat) handleChat(account, mo, text, norm, msg);
+        if (regChat != 0 && sameChat(regChat, dialogId)) handleChat(account, mo, text, norm, msg);
         if (fromBot && dialogId > 0) handleDm(account, mo, text, norm, msg, sender);
     }
 
+    /** Сравнивает ID из настроек с dialogId (принимает 123, -123, -100123…). */
+    private static boolean sameChat(long configured, long dialogId) {
+        if (configured == 0) return false;
+        if (configured == dialogId) return true;
+        if (configured > 0 && dialogId == -configured) return true;
+        if (configured < 0 && dialogId == configured) return true;
+        // bare channel id vs -100xxxxxxxxxx
+        long bareCfg = Math.abs(configured);
+        long bareDlg = dialogId < 0 ? -dialogId : dialogId;
+        String sCfg = String.valueOf(bareCfg);
+        String sDlg = String.valueOf(bareDlg);
+        if (sDlg.startsWith("100") && sDlg.length() > 3) {
+            try {
+                long ch = Long.parseLong(sDlg.substring(3));
+                if (ch == bareCfg) return true;
+            } catch (Throwable ignore) {}
+        }
+        if (sCfg.startsWith("100") && sCfg.length() > 3) {
+            try {
+                long ch = Long.parseLong(sCfg.substring(3));
+                if (dialogId == -ch || bareDlg == ch) return true;
+                // also full -100 form
+                if (dialogId == -bareCfg) return true;
+            } catch (Throwable ignore) {}
+        }
+        return false;
+    }
+
     private void handleChat(int account, MessageObject mo, String text, String norm, TLRPC.Message msg) {
-        if (PikmiMafia.hit(PikmiMafia.getRegTrigger(), norm) && once("reg:" + msg.id)) {
-            startGame();
+        if (PikmiMafia.isAutoReg() && PikmiMafia.hit(PikmiMafia.getRegTrigger(), norm)
+                && once("reg:" + MessageObject.getDialogId(msg) + ":" + msg.id)) {
+            log("📝 Рег-триггер did=" + MessageObject.getDialogId(msg));
             main.postDelayed(() -> doRegisterAll(mo), 400);
         }
         if (PikmiMafia.hit(PikmiMafia.getNightTrigger(), norm) && once("night:" + msg.id)) {
@@ -504,12 +534,56 @@ public class PikmiMafiaEngine {
         String botUser = extractBot(mo);
         if (TextUtils.isEmpty(botUser)) botUser = PikmiMafia.getBotUsername();
         final String bot = botUser, param = payload;
+        // Участники от текущего selected + все activated в twins; fallback — все activated
         ArrayList<Integer> accs = PikmiMafia.participatingAccounts(UserConfig.selectedAccount);
-        log("📝 Регистрация x" + accs.size() + (param != null ? " param=" + param : ""));
+        if (accs.isEmpty()) {
+            for (int a = 0; a < UserConfig.MAX_ACCOUNT_COUNT; a++) {
+                try {
+                    if (UserConfig.getInstance(a).isClientActivated()) accs.add(a);
+                } catch (Throwable ignore) {}
+            }
+        }
+        log("📝 Регистрация x" + accs.size()
+                + (param != null ? " param=" + param : " (no start-param)")
+                + " bot=@" + bot);
+        // 1) deep-link /start param для каждого акка
         for (int account : accs) {
             final int acc = account;
             Utilities.globalQueue.postRunnable(() -> {
                 try { registerOne(acc, bot, param, mo); } catch (Throwable e) { FileLog.e(e); }
+            });
+        }
+        // 2) если на сообщении есть callback-кнопки регистрации — жмём с каждого акка
+        if (mo != null && mo.messageOwner != null && hasInline(mo.messageOwner)) {
+            main.postDelayed(() -> pressRegCallbacks(mo, accs), 700);
+        }
+    }
+
+    /** Жмёт callback-кнопки «рег/играть/join/+» на сообщении набора. */
+    private void pressRegCallbacks(MessageObject mo, ArrayList<Integer> accs) {
+        if (mo == null || mo.messageOwner == null) return;
+        final long did = MessageObject.getDialogId(mo.messageOwner);
+        final int mid = mo.messageOwner.id;
+        final String[] keys = new String[]{
+                "регист", "рег на", "в игр", "играть", "присоед", "join", "play", "вход", "+"
+        };
+        for (int account : accs) {
+            final int acc = account;
+            forEachButton(mo.messageOwner, b -> {
+                byte[] data = btnData(b);
+                if (data == null) return;
+                String bt = PikmiMafia.normText(btnText(b));
+                if (bt.length() == 0) return;
+                boolean match = false;
+                for (String k : keys) {
+                    if (bt.contains(PikmiMafia.normText(k)) || bt.equals("+")) { match = true; break; }
+                }
+                // url-кнопки уже обработаны через start=; здесь только callback
+                if (!match) return;
+                try {
+                    pressCb(acc, did, mid, data);
+                    log("📝 cb-рег acc" + (acc + 1) + " → " + btnText(b));
+                } catch (Throwable e) { FileLog.e(e); }
             });
         }
     }
@@ -575,17 +649,34 @@ public class PikmiMafiaEngine {
                     start.start_param = startParam;
                     start.random_id = Utilities.random.nextLong();
                     ConnectionsManager.getInstance(account).sendRequest(start, (r2, e2) -> {
-                        if (PikmiMafia.isTournament() && pressColor(account, regMsg, PikmiMafia.getColor())) {
-                            log("✅ tour acc" + (account + 1));
-                            return;
+                        if (e2 != null) {
+                            log("⚠️ startBot acc" + (account + 1) + ": " + e2.text);
+                            // fallback — обычный /start param текстом
+                            try {
+                                SendMessagesHelper.SendMessageParams p = SendMessagesHelper.SendMessageParams.of(
+                                        "/start " + startParam, bot.id);
+                                p.notify = false;
+                                SendMessagesHelper.getInstance(account).sendMessage(p);
+                            } catch (Throwable ignore) {}
+                        } else {
+                            log("✅ reg acc" + (account + 1) + " param=" + startParam);
                         }
-                        log(e2 != null ? "⚠️ startBot acc" + (account + 1) : "✅ reg acc" + (account + 1));
+                        if (PikmiMafia.isTournament()) {
+                            main.postDelayed(() -> {
+                                try { pressColor(account, regMsg, PikmiMafia.getColor()); } catch (Throwable ignore) {}
+                            }, 500);
+                        }
                     });
                 } else {
                     SendMessagesHelper.SendMessageParams p = SendMessagesHelper.SendMessageParams.of("/start", bot.id);
                     p.notify = false;
                     SendMessagesHelper.getInstance(account).sendMessage(p);
-                    log("✅ /start acc" + (account + 1));
+                    log("✅ /start acc" + (account + 1) + " (no param)");
+                    if (PikmiMafia.isTournament()) {
+                        main.postDelayed(() -> {
+                            try { pressColor(account, regMsg, PikmiMafia.getColor()); } catch (Throwable ignore) {}
+                        }, 500);
+                    }
                 }
             } catch (Throwable e) { FileLog.e(e); }
         });
