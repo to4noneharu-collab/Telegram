@@ -87,15 +87,14 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           git push origin "HEAD:${{ github.ref_name }}"
-          gh workflow run build-apk.yml --ref "${{ github.ref_name }}"
+          gh api --method POST "repos/$GITHUB_REPOSITORY/actions/workflows/build-apk.yml/dispatches" -f ref="${{ github.ref_name }}"
 
       - name: Report problem
         if: failure() && steps.up.outputs.uptodate == 'false'
-        env:
-          GH_TOKEN: ${{ github.token }}
         run: |
-          T="Обновление Telegram ${{ steps.up.outputs.sha }}: нужно вмешательство"
-          N=$(gh issue list --repo "$GITHUB_REPOSITORY" --state open --search "$T in:title" --json number --jq length 2>/dev/null || echo 0)
-          if [ "$N" = "0" ]; then
-            gh issue create --repo "$GITHUB_REPOSITORY" --title "$T" --body "Вышла новая версия официального Telegram, но автоматически подтянуть её не удалось (конфликт слияния или патч не применился). Лог: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" || true
-          fi
+          {
+            echo "## Sync with official Telegram failed"
+            echo
+            echo "The sync workflow failed after the merge or patch validation stage."
+            echo "Run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          } >> "$GITHUB_STEP_SUMMARY"
