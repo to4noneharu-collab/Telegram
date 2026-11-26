@@ -29,6 +29,9 @@ jobs:
           submodules: recursive
           fetch-depth: 50
 
+      - name: Restore base shadow ban integration
+        run: python3 .github/scripts/shadowban_base.py
+
       - name: Add shadow ban list menu
         run: python3 .github/scripts/shadowban_list.py
 
