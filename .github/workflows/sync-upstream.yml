@@ -6,6 +6,9 @@ name: Sync with official Telegram
 # 3) запускает сборку, после которой апдейтер в приложении предложит обновиться.
 
 on:
+  push:
+    paths:
+      - .github/workflows/sync-upstream.yml
   schedule:
     - cron: '23 */6 * * *'
   workflow_dispatch:
