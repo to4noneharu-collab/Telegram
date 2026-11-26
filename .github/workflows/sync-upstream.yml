@@ -80,7 +80,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           T="Обновление Telegram ${{ steps.up.outputs.sha }}: нужно вмешательство"
-          N=$(gh issue list --state open --search "$T in:title" --json number --jq length 2>/dev/null || echo 0)
+          N=$(gh issue list --repo "$GITHUB_REPOSITORY" --state open --search "$T in:title" --json number --jq length 2>/dev/null || echo 0)
           if [ "$N" = "0" ]; then
-            gh issue create --title "$T" --body "Вышла новая версия официального Telegram, но автоматически подтянуть её не удалось (конфликт слияния или патч не применился). Лог: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" || true
+            gh issue create --repo "$GITHUB_REPOSITORY" --title "$T" --body "Вышла новая версия официального Telegram, но автоматически подтянуть её не удалось (конфликт слияния или патч не применился). Лог: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" || true
           fi
