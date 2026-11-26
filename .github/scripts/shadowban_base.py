@@ -90,11 +90,11 @@ if "case OPTION_SHADOW_BAN:" not in ca:
     if ca.count(method) != 1:
         die("не найден единственный метод processSelectedOption")
     start = ca.index(method)
-    switch = "        switch (option) {\n"
-    pos = ca.find(switch, start)
-    if pos < 0 or ca.find(switch, pos + len(switch)) >= 0:
-        die("не найден однозначный switch(option) внутри processSelectedOption")
-    ca = ca[:pos + len(switch)] + handler + ca[pos + len(switch):]
+    case_anchor = "            case OPTION_RETRY: {"
+    pos = ca.find(case_anchor, start)
+    if pos < 0 or ca.find(case_anchor, pos + len(case_anchor)) >= 0:
+        die("не найден однозначный первый case внутри processSelectedOption")
+    ca = ca[:pos] + handler + ca[pos:]
 elif ca.count("case OPTION_SHADOW_BAN:") != 1:
     die("обработчик OPTION_SHADOW_BAN встречается более одного раза")
 
